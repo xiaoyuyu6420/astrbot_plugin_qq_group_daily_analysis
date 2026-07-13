@@ -624,6 +624,55 @@ class OneBotAdapter(PlatformAdapter):
             image_path, do_send, "OneBot 图片", format_path_as_url=True
         )
 
+    async def send_private(
+        self,
+        user_id: str,
+        text: str = "",
+        image_path: str = "",
+    ) -> bool:
+        """向指定 QQ 发送私聊消息（可同时包含图片和文本）。
+
+        Args:
+            user_id: 目标 QQ 号
+            text: 文本内容（可选）
+            image_path: 图片路径/URL（可选，复用 _execute_transmission_strategy 的转码逻辑）
+
+        Returns:
+            bool: 是否发送成功
+        """
+
+        async def do_send(file_val: str, label: str):
+            msg = []
+            if image_path:
+                msg.append({"type": "image", "data": {"file": file_val}})
+            if text:
+                msg.append({"type": "text", "data": {"text": text}})
+            try:
+                await self.bot.call_action(
+                    "send_private_msg", user_id=int(user_id), message=msg
+                )
+            except Exception as e:
+                logger.error(
+                    f"私聊发送失败 ({label}, user_id={user_id}): {e}"
+                )
+                raise
+            logger.debug(f"私聊发送成功 ({label}): user_id={user_id}")
+
+        try:
+            if image_path:
+                # 复用图片传输策略（base64 优先 / 路径 / URL 兜底）
+                return await self._execute_transmission_strategy(
+                    image_path, do_send, "私聊图片", format_path_as_url=True
+                )
+            if text:
+                await do_send("", "纯文本")
+                return True
+            logger.warning(f"私聊发送内容为空，跳过 (user_id={user_id})")
+            return False
+        except Exception as e:
+            logger.error(f"私聊发送最终失败 (user_id={user_id}): {e}")
+            return False
+
     async def send_file(
         self,
         group_id: str,

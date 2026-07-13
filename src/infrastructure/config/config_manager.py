@@ -558,6 +558,19 @@ class ConfigManager:
         """获取定时分析目标群列表"""
         return self._get_group("auto_analysis").get("scheduled_group_list", [])
 
+    # ==================== 管理员私聊通知配置 ====================
+
+    def is_admin_notify_enabled(self) -> bool:
+        """是否开启「定时报告私聊管理员」模式（开启后不发群，只私聊管理员）"""
+        return bool(self._get_group("admin_notify").get("enable_admin_notify", False))
+
+    def get_extra_admin_qqs(self) -> list[str]:
+        """获取额外管理员 QQ 列表（除 AstrBot 超管外，额外接收报告的人）"""
+        raw = self._get_group("admin_notify").get("extra_admin_qq", [])
+        if not isinstance(raw, list):
+            raw = [raw]
+        return [str(x).strip() for x in raw if str(x).strip()]
+
     def set_scheduled_group_list(self, groups: list[str]):
         """设置定时分析目标群列表"""
         self._ensure_group("auto_analysis")["scheduled_group_list"] = groups

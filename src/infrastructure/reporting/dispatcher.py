@@ -41,6 +41,13 @@ class ReportDispatcher:
         分发分析报告
         """
         trace_id = TraceContext.get()
+
+        # 【定制】管理员私聊通知模式：定时报告发管理员私聊，不发群
+        if self.config_manager.is_admin_notify_enabled():
+            logger.info(f"[{trace_id}] 管理员私聊通知已开启，报告将私聊发给管理员 (源群: {group_id})")
+            await self._dispatch_to_admins(group_id, analysis_result, platform_id)
+            return
+
         output_format = self.config_manager.get_output_format()
 
         logger.info(
@@ -209,6 +216,120 @@ class ReportDispatcher:
         except Exception as e:
             logger.error(f"[分发器] 发送文本报告最终失败。群: {group_id}, 错误: {e}")
             return False
+
+    # ================================================================
+    # 【定制】管理员私聊通知
+    # ================================================================
+
+    def _get_admin_qqs(self) -> list[str]:
+        """合并 AstrBot 超级管理员 + 插件配置的额外管理员 QQ，过滤掉非数字项"""
+        qqs: list[str] = []
+
+        # 1. 从 AstrBot 全局配置读超级管理员 admins_id
+        try:
+            bot_manager = self.message_sender.bot_manager
+            context = getattr(bot_manager, "_context", None)
+            if context is not None:
+                get_config = getattr(context, "get_config", None)
+                if callable(get_config):
+                    global_config = get_config()
+                    admins_id = global_config.get("admins_id", []) if isinstance(
+                        global_config, dict
+                    ) else []
+                    if isinstance(admins_id, list):
+                        qqs.extend(str(x) for x in admins_id)
+        except Exception as e:
+            logger.warning(f"读取 AstrBot 超管配置失败: {e}")
+
+        # 2. 合并插件配置的额外管理员 QQ
+        qqs.extend(self.config_manager.get_extra_admin_qqs())
+
+        # 3. 过滤：只保留纯数字（QQ 号），去重，排除默认占位 "astrbot"
+        seen = set()
+        result = []
+        for q in qqs:
+            q_clean = str(q).strip()
+            if q_clean.isdigit() and q_clean not in seen:
+                seen.add(q_clean)
+                result.append(q_clean)
+        return result
+
+    async def _dispatch_to_admins(
+        self,
+        group_id: str,
+        analysis_result: dict[str, Any],
+        platform_id: str | None,
+    ) -> None:
+        """把报告私聊发给所有管理员（图片优先，失败回退文本）。不发群。"""
+        trace_id = TraceContext.get()
+        adapter = self.message_sender.bot_manager.get_adapter(platform_id)
+        if not adapter:
+            logger.error(f"[{trace_id}] 管理员通知失败：无法获取 adapter (platform_id={platform_id})")
+            return
+        if not hasattr(adapter, "send_private"):
+            logger.error(f"[{trace_id}] 管理员通知失败：当前平台 adapter 不支持私聊发送 (非 OneBot?)")
+            return
+
+        admin_qqs = self._get_admin_qqs()
+        if not admin_qqs:
+            logger.warning(
+                f"[{trace_id}] 未找到有效的管理员 QQ（请在 AstrBot 通用设置 admins_id 填真实 QQ，或插件配置 extra_admin_qq）。报告未发出。"
+            )
+            return
+
+        logger.info(f"[{trace_id}] 管理员私聊通知目标: {admin_qqs}")
+
+        # 1. 生成图片报告（复用 _dispatch_image 的生成逻辑，但不发群）
+        image_url: str | None = None
+        if self._html_render_func:
+            try:
+                async def avatar_url_getter(user_id: str):
+                    if not platform_id:
+                        return None
+                    a = self.message_sender.bot_manager.get_adapter(platform_id)
+                    if a and hasattr(a, "get_user_avatar_url"):
+                        return await a.get_user_avatar_url(user_id, size=40)
+                    return None
+
+                image_url, _ = await self.report_generator.generate_image_report(
+                    analysis_result,
+                    group_id,
+                    self._html_render_func,
+                    avatar_url_getter=avatar_url_getter,
+                    avatar_cache_namespace=platform_id,
+                )
+            except Exception as e:
+                logger.error(f"[{trace_id}] 生成图片报告失败: {e}")
+                image_url = None
+
+        # 2. 准备文本兜底
+        text_report = self.report_generator.generate_text_report(analysis_result)
+
+        # 3. 逐个私聊发送
+        caption = TraceContext.make_report_caption()
+        success_count = 0
+        for qq in admin_qqs:
+            try:
+                if image_url:
+                    ok = await adapter.send_private(
+                        user_id=qq, image_path=image_url, text=caption
+                    )
+                else:
+                    ok = await adapter.send_private(
+                        user_id=qq,
+                        text=f"📊 每日群聊分析报告（群 {group_id}）：\n\n{text_report}",
+                    )
+                if ok:
+                    success_count += 1
+                    logger.info(f"[{trace_id}] 已私聊发送报告给 {qq}")
+                else:
+                    logger.warning(f"[{trace_id}] 私聊发送 {qq} 返回失败（可能是非好友）")
+            except Exception as e:
+                logger.error(f"[{trace_id}] 私聊发送 {qq} 异常: {e}")
+
+        logger.info(
+            f"[{trace_id}] 管理员通知完成：成功 {success_count}/{len(admin_qqs)}"
+        )
 
     # ================================================================
     # 图片报告上传到群文件 / 群相册（仅 QQ 平台 image 格式）

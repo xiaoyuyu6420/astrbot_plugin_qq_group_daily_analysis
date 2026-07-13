@@ -548,6 +548,21 @@ class GroupDailyAnalysis(Star):
                     event.get_group_id(), orig_msg_id, "analysis_done"
                 )
 
+            # 【定制】管理员私聊通知模式：手动命令也改走 dispatcher
+            # dispatch() 开关开时会自动私聊管理员、不发群；开关关时走原发群逻辑
+            if (
+                self.config_manager.is_admin_notify_enabled()
+                and self.auto_scheduler
+                and getattr(self.auto_scheduler, "report_dispatcher", None)
+            ):
+                await self.auto_scheduler.report_dispatcher.dispatch(
+                    result["group_id"],
+                    result["analysis_result"],
+                    result["platform_id"],
+                )
+                yield event.plain_result("✅ 分析完成，报告已私聊发送给管理员")
+                return
+
             async for res in self._send_analysis_report(event, result):
                 yield res
 
