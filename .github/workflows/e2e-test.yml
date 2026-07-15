@@ -26,6 +26,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install pytest pytest-asyncio
           pip install -r requirements.txt
+          # 插件代码导入链需要 pydantic（astrbot 的依赖），集成测试无 astrbot 时需手动装
+          pip install pydantic
 
       - name: Run integration tests
         run: |
