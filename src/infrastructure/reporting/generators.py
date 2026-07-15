@@ -649,13 +649,13 @@ class ReportGenerator(IReportGenerator):
         return caption + f"\n{base_url.rstrip('/')}/{encoded_relative_url}"
 
     def generate_text_report(self, analysis_result: dict) -> str:
-        """生成文本格式的分析报告"""
+        """生成文本格式的分析报告（定制版：只保留统计/话题/信息差）"""
         stats = analysis_result["statistics"]
-        topics = analysis_result["topics"]
-        user_titles = analysis_result["user_titles"]
+        topics = analysis_result.get("topics") or []
+        user_titles = analysis_result.get("user_titles") or []
 
         report = f"""
-🎯 群聊日常分析报告
+📋 群聊情报日报
 📅 {datetime.now().strftime("%Y年%m月%d日")}
 
 📊 基础统计
@@ -665,27 +665,36 @@ class ReportGenerator(IReportGenerator):
 • 表情数量: {stats.emoji_count}
 • 最活跃时段: {stats.most_active_period}
 
-💬 热门话题
+💬 有价值话题
 """
 
         max_topics = self.config_manager.get_max_topics()
-        for i, topic in enumerate(topics[:max_topics], 1):
-            contributors_str = "、".join(topic.contributors)
-            report += f"{i}. {topic.topic}\n"
-            report += f"   参与者: {contributors_str}\n"
-            report += f"   {topic.detail}\n\n"
+        if topics:
+            for i, topic in enumerate(topics[:max_topics], 1):
+                contributors_str = "、".join(topic.contributors)
+                report += f"{i}. {topic.topic}\n"
+                report += f"   参与者: {contributors_str}\n"
+                report += f"   {topic.detail}\n\n"
+        else:
+            report += "（今日无明显有价值话题）\n\n"
 
-        report += "🏆 群友称号\n"
-        max_user_titles = self.config_manager.get_max_user_titles()
-        for title in user_titles[:max_user_titles]:
-            report += f"• {title.name} - {title.title} ({title.mbti})\n"
-            report += f"  {title.reason}\n\n"
+        # 兼容旧数据：仅当确实存在称号结果时才展示（定制版默认不会生成）
+        if user_titles and self.config_manager.get_user_title_analysis_enabled():
+            report += "🏆 群友称号\n"
+            max_user_titles = self.config_manager.get_max_user_titles()
+            for title in user_titles[:max_user_titles]:
+                report += f"• {title.name} - {title.title} ({title.mbti})\n"
+                report += f"  {title.reason}\n\n"
 
-        report += "💬 群圣经\n"
+        report += "💎 信息差 / 商机 / 干货\n"
         max_golden_quotes = self.config_manager.get_max_golden_quotes()
-        for i, golden_quote in enumerate(stats.golden_quotes[:max_golden_quotes], 1):
-            report += f'{i}. "{golden_quote.content}" —— {golden_quote.sender}\n'
-            report += f"   {golden_quote.reason}\n\n"
+        golden_quotes = getattr(stats, "golden_quotes", None) or []
+        if golden_quotes:
+            for i, golden_quote in enumerate(golden_quotes[:max_golden_quotes], 1):
+                report += f'{i}. "{golden_quote.content}" —— {golden_quote.sender}\n'
+                report += f"   {golden_quote.reason}\n\n"
+        else:
+            report += "（今日未筛到可行动的高价值信息）\n\n"
 
         return report
 
@@ -743,45 +752,51 @@ class ReportGenerator(IReportGenerator):
         )
         logger.info(f"话题HTML生成完成，长度: {len(topics_html)}")
 
-        # 使用Jinja2模板构建用户称号HTML（批量渲染，包含头像）
-        max_user_titles = self.config_manager.get_max_user_titles()
-        titles_list = []
-        profile_mode = self.config_manager.get_profile_display_mode()
-        profile_mapping_overrides = self._get_profile_mapping_overrides()
-        for title in user_titles[:max_user_titles]:
-            user_id = str(title.user_id)
-            # 获取用户头像
-            avatar_data = await self._get_user_avatar(
-                user_id, avatar_url_getter, avatar_cache_namespace
-            )
-            self._register_reusable_avatar(
-                avatar_data,
-                avatar_reuse_registry,
-                avatar_reuse_aliases,
-                avatar_key=self._get_avatar_cache_key(user_id, avatar_cache_namespace),
-            )
-            profile_info = self._resolve_profile_info(
-                title.mbti, profile_mode, profile_mapping_overrides
-            )
-            title_data = {
-                "name": title.name,
-                "title": title.title,
-                "mbti": title.mbti,
-                "reason": title.reason,
-                "avatar_data": avatar_data,
-            }
-            title_data.update(profile_info)
-            titles_list.append(title_data)
+        # 用户称号/MBTI：定制版默认关闭；关闭时不渲染娱乐板块
+        titles_html = ""
+        if user_titles and self.config_manager.get_user_title_analysis_enabled():
+            max_user_titles = self.config_manager.get_max_user_titles()
+            titles_list = []
+            profile_mode = self.config_manager.get_profile_display_mode()
+            profile_mapping_overrides = self._get_profile_mapping_overrides()
+            for title in user_titles[:max_user_titles]:
+                user_id = str(title.user_id)
+                avatar_data = await self._get_user_avatar(
+                    user_id, avatar_url_getter, avatar_cache_namespace
+                )
+                self._register_reusable_avatar(
+                    avatar_data,
+                    avatar_reuse_registry,
+                    avatar_reuse_aliases,
+                    avatar_key=self._get_avatar_cache_key(
+                        user_id, avatar_cache_namespace
+                    ),
+                )
+                profile_info = self._resolve_profile_info(
+                    title.mbti, profile_mode, profile_mapping_overrides
+                )
+                title_data = {
+                    "name": title.name,
+                    "title": title.title,
+                    "mbti": title.mbti,
+                    "reason": title.reason,
+                    "avatar_data": avatar_data,
+                }
+                title_data.update(profile_info)
+                titles_list.append(title_data)
 
-        titles_html = self.html_templates.render_template(
-            "user_title_item.html", titles=titles_list, **common_context
-        )
-        logger.info(f"用户称号HTML生成完成，长度: {len(titles_html)}")
+            titles_html = self.html_templates.render_template(
+                "user_title_item.html", titles=titles_list, **common_context
+            )
+            logger.info(f"用户称号HTML生成完成，长度: {len(titles_html)}")
+        else:
+            logger.info("已跳过用户称号/MBTI 板块（定制版关闭娱乐功能）")
 
-        # 使用Jinja2模板构建金句HTML（批量渲染）
+        # 信息差/干货 HTML（原金句板块）
         max_golden_quotes = self.config_manager.get_max_golden_quotes()
         quotes_list = []
-        for golden_quote in stats.golden_quotes[:max_golden_quotes]:
+        golden_quotes = getattr(stats, "golden_quotes", None) or []
+        for golden_quote in golden_quotes[:max_golden_quotes]:
             quote_user_id = str(golden_quote.user_id) if golden_quote.user_id else None
             avatar_url = (
                 await self._get_user_avatar(
@@ -801,7 +816,7 @@ class ReportGenerator(IReportGenerator):
                         quote_user_id, avatar_cache_namespace
                     ),
                 )
-            # 处理解析锐评中的用户引用头像
+            # 处理价值说明中的用户引用头像
             processed_reason = await self._render_mentions(
                 golden_quote.reason,
                 avatar_url_getter,
@@ -823,7 +838,7 @@ class ReportGenerator(IReportGenerator):
         quotes_html = self.html_templates.render_template(
             "quote_item.html", quotes=quotes_list, **common_context
         )
-        logger.info(f"金句HTML生成完成，长度: {len(quotes_html)}")
+        logger.info(f"信息差HTML生成完成，长度: {len(quotes_html)}")
 
         # 生成活跃度可视化HTML
         chart_data = self.activity_visualizer.get_hourly_chart_data(
@@ -834,11 +849,13 @@ class ReportGenerator(IReportGenerator):
         )
         logger.info(f"活跃度图表HTML生成完成，长度: {len(hourly_chart_html)}")
 
-        # 生成聊天质量锐评HTML
+        # 聊天质量锐评：定制版默认关闭娱乐功能，不渲染
         chat_quality_html = ""
-        chat_quality_review = analysis_result.get("chat_quality_review")
-        if not chat_quality_review and hasattr(stats, "chat_quality_review"):
-            chat_quality_review = stats.chat_quality_review
+        chat_quality_review = None
+        if self.config_manager.get_chat_quality_analysis_enabled():
+            chat_quality_review = analysis_result.get("chat_quality_review")
+            if not chat_quality_review and hasattr(stats, "chat_quality_review"):
+                chat_quality_review = stats.chat_quality_review
 
         if chat_quality_review:
             # 如果是对象，转为字典（为了统一渲染）

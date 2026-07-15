@@ -305,20 +305,26 @@ class ReportDispatcher:
         # 2. 准备文本兜底
         text_report = self.report_generator.generate_text_report(analysis_result)
 
-        # 3. 逐个私聊发送
+        # 3. 逐个私聊发送（图片优先；图片失败则回退文本，保证情报及时送达）
         caption = TraceContext.make_report_caption()
+        text_payload = f"📋 群聊情报日报（群 {group_id}）：\n\n{text_report}"
         success_count = 0
         for qq in admin_qqs:
             try:
+                ok = False
                 if image_url:
                     ok = await adapter.send_private(
                         user_id=qq, image_path=image_url, text=caption
                     )
+                    if not ok:
+                        logger.warning(
+                            f"[{trace_id}] 私聊图片发送 {qq} 失败，回退文本"
+                        )
+                        ok = await adapter.send_private(
+                            user_id=qq, text=text_payload
+                        )
                 else:
-                    ok = await adapter.send_private(
-                        user_id=qq,
-                        text=f"📊 每日群聊分析报告（群 {group_id}）：\n\n{text_report}",
-                    )
+                    ok = await adapter.send_private(user_id=qq, text=text_payload)
                 if ok:
                     success_count += 1
                     logger.info(f"[{trace_id}] 已私聊发送报告给 {qq}")
@@ -326,6 +332,13 @@ class ReportDispatcher:
                     logger.warning(f"[{trace_id}] 私聊发送 {qq} 返回失败（可能是非好友）")
             except Exception as e:
                 logger.error(f"[{trace_id}] 私聊发送 {qq} 异常: {e}")
+                # 异常时再尝试纯文本，尽量保证推送不丢
+                try:
+                    if await adapter.send_private(user_id=qq, text=text_payload):
+                        success_count += 1
+                        logger.info(f"[{trace_id}] 异常后文本回退成功: {qq}")
+                except Exception as e2:
+                    logger.error(f"[{trace_id}] 文本回退也失败 {qq}: {e2}")
 
         logger.info(
             f"[{trace_id}] 管理员通知完成：成功 {success_count}/{len(admin_qqs)}"

@@ -39,3 +39,6 @@ test_mainland.html
 test_overseas.html
 .tmp_refs/
 
+
+# IDE / editor
+.zcode/

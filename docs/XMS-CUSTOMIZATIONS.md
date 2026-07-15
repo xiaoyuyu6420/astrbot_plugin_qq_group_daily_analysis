@@ -5,7 +5,8 @@
 
 ## 一句话概括
 
-把上游「抓逆天言论、发回群」的群聊分析插件，改造成「抓信息差/商机/干货、定时报告私聊推送给管理员」的情报订阅版。
+把上游「抓逆天言论、发回群」的群聊分析插件，改造成「挖掘有效信息 + 及时私聊推送管理员」的情报订阅版：  
+**保留输出方式与自定义程度**（图片/文本/HTML、模板、prompt），**去掉娱乐功能**（用户称号/MBTI、聊天质量锐评等）。
 
 ## 定制点总览
 
@@ -14,9 +15,12 @@
 | 1 | 管理员私聊推送（定时报告不发群） | `dispatcher.py`, `onebot_adapter.py`, `config_manager.py`, `analysis_application_service.py` | +222 / -27 |
 | 2 | 手动命令 `/群分析` 也改私聊 | `main.py` | +15 / -0 |
 | 3 | 信息差主题（替换原"逆天言论"） | `_conf_schema.json` 的 `prompts` | 见下 |
-| 4 | 配置面板重排（admin_notify / prompts 提到最上） | `_conf_schema.json` | 结构调整 |
-| 5 | 关闭用户称号 / 聊天质量锐评板块 | `_conf_schema.json` 的 `analysis_features` | 默认值改 false |
+| 4 | 配置面板重排（admin_notify / prompts / message_monitor 提到最上） | `_conf_schema.json` | 结构调整 |
+| 5 | **硬关闭并移除娱乐功能**（称号/MBTI/锐评） | `_conf_schema.json`, `config_manager.py`, `generators.py`, 模板文案 | 功能收敛 |
 | 6 | 元数据 + logo | `metadata.yaml`, `logo.png` | 版本/作者/占位图 |
+| 7 | 单群情报场景默认值 | `_conf_schema.json`, `config_manager.py` | 默认更贴近「私聊 + 单群」 |
+| 8 | 私聊推送可靠性（图片失败回退文本） | `dispatcher.py` | 及时送达 |
+| 9 | **实时消息监控（盯人预警）** | `message_monitor_service.py`(新), `main.py`, `config_manager.py`, `_conf_schema.json` | +~300 行 |
 
 ---
 
@@ -71,11 +75,27 @@
 ...（其余按原序）
 ```
 
-### 定制点 5：关闭无用板块
+### 定制点 5：去掉娱乐功能，只留有效信息挖掘
 
-**改动**（`_conf_schema.json` 的 `analysis_features`）：默认值改 false
-- `user_title_analysis_enabled`（用户称号/MBTI 板块）→ false，不在报告里显示
-- `chat_quality_analysis_enabled`（聊天质量锐评板块）→ false，不在报告里显示
+**目标**：保留「输出方式 + 自定义程度」，去掉娱乐向分析。
+
+**保留**：
+- 输出：`image` / `text` / `html`
+- 模板：`report_template`（默认改为 `simple`）
+- 自定义：话题 prompt、信息差 prompt、LLM provider、定时时间、群白名单、管理员推送
+
+**去掉 / 硬关闭**：
+- 用户称号 + MBTI / SBTI / ACGTI 画像
+- 聊天质量锐评
+- 配置面板中的相关开关、prompt、provider、profile 映射大 JSON
+
+**实现方式**（不是只改默认值）：
+1. `_conf_schema.json`：从面板删除娱乐配置项（称号/锐评 prompt、profile_*、对应 provider）
+2. `config_manager.get_user_title_analysis_enabled()` / `get_chat_quality_analysis_enabled()` **始终返回 False**  
+   （即使旧配置文件里还是 true，也不会再跑娱乐 LLM）
+3. `set_*` 强制写 False，防止命令/旧逻辑重新打开
+4. `generators.py`：文本/HTML 渲染跳过称号与锐评板块；信息差文案改为「信息差/商机/干货」
+5. 若干模板 `quote_item.html` / `topic_item.html` 标题从「群圣经 / 热门话题」改为情报向文案
 
 ### 定制点 6：元数据 + logo
 
@@ -89,14 +109,88 @@
 
 **`logo.png`**：原图（225×225, 104KB）→ 1×1 透明占位（69B）。目的是在 astrbot 插件列表里不显示原图。
 
+### 定制点 7：单群情报场景默认值
+
+**目标**：开箱更贴近「监控一个群 + 每天总结有价值信息 + 私聊管理员」，不靠大删代码做轻量化。
+
+| 配置项 | 上游/旧默认 | 定制默认 | 说明 |
+|--------|-------------|----------|------|
+| `admin_notify.enable_admin_notify` | `false` | **`true`** | 默认走私聊，不发群 |
+| `basic.group_list_mode` | `"none"` | **`"whitelist"`** | 默认只允许白名单群，避免误分析所有群 |
+| `basic.min_messages_threshold` | `200` | **`50`** | 安静情报群也更容易出报告 |
+| 信息差相关文案 | 「金句」 | 「信息差/干货」 | 只改 description/hint，**不改配置 key** |
+
+代码 fallback 同步：`config_manager.is_admin_notify_enabled()` 缺 key 时默认 `True`。
+
+**重要：已有配置不会自动覆盖。**  
+AstrBot 对已安装插件会保留现有配置文件；schema 默认值只在**新装**或**缺失该 key** 时生效。若你之前已经装过，需要手动把 `enable_admin_notify` 设为 `true`、`group_list_mode` 设为 `whitelist`。
+
+**仍然必须手动填写（不能写死默认）**：
+- `basic.group_list`：要监控的群
+- `auto_analysis.scheduled_group_list`：定时分析的群
+- 管理员 QQ（`admins_id` 或 `extra_admin_qq`）
+
+### 定制点 8：私聊推送可靠性（及时送达）
+
+`dispatcher._dispatch_to_admins()`：
+- 图片优先
+- **图片发送失败时回退纯文本**（原先图片失败只打日志，可能丢推送）
+- 发送异常时再尝试一次文本，尽量保证情报不丢
+
+### 定制点 9：实时消息监控（盯人预警）
+
+**问题**：定时日报是「每天 23:00 汇总」，但群里高价值信息（如有人丢了个 API key）出现即需知道，隔天看就晚了。需要实时盯住特定 QQ 的发言，命中有用信息立即推送。
+
+**架构**（与定时日报链路完全独立，互不影响）：
+
+```
+监控群消息（所有人）→ 攒入该群缓冲区
+                          │
+          后台 flush 任务（每 flush_interval 分钟醒来）
+                          │
+          按 max_context_messages 截断（以目标QQ为中心保留上下文）
+                          │
+          该窗口内有目标 QQ 发言？否 → 跳过（省 LLM 调用）
+                          │
+          批量 LLM 总结：在完整对话上下文中提取目标 QQ 的价值信息
+             有价值 → 推一条汇总
+             无价值 → 丢弃
+             LLM 不可用 → 降级推目标 QQ 原始发言（保证不漏）
+```
+
+**为什么要整窗（攒所有人的消息）**：群聊是多人的对话。目标 QQ 单独说"这个能用""我也想要"，脱离上下文就有语义歧义。把完整对话（标注每个人）给 LLM，它能看到：目标 QQ 在回答谁的问题？别人在讨论什么？这样才能准确判断价值。
+
+**为什么按条数截断**：活跃群 X 分钟可能几百条消息全送 LLM 会 token 爆。截断策略：消息数超过 `max_context_messages`（默认 50）时，以目标 QQ 发言为中心，向前向后扩展窗口，保证上下文连续性。
+
+**新增文件**：`src/application/services/message_monitor_service.py`（`MessageMonitorService`）
+
+**修改文件**：
+- `main.py`：新增 `monitor_qq_messages` 拦截器（`@filter.platform_adapter_type(AIOCQHTTP)`），克隆 Telegram 拦截器模式；`__init__` 实例化服务；`terminate` 调用 `stop()` 清理后台任务
+- `config_manager.py`：新增 7 个 getter（`is_monitor_enabled` / `get_monitored_qqs` / `get_monitored_groups` / `get_monitor_extra_keywords` / `is_llm_confirm_enabled` / `get_flush_interval` / `get_alert_admin_qqs`）
+- `_conf_schema.json`：新增 `message_monitor` 配置组（放在 `admin_notify` 之后）
+
+**关键设计**：
+| 决策 | 说明 |
+|------|------|
+| 整窗模式 | 攒群里所有人的消息（标注发送者），让 LLM 在完整对话上下文里判断目标 QQ 的价值。解决"单看一个人发言有歧义"问题 |
+| 按条数截断 | 活跃群消息量大时，以目标 QQ 发言为中心保留 `max_context_messages` 条上下文（默认 50） |
+| 窗口无目标发言 → 跳过 | flush 时先检查该窗口有没有目标 QQ 发言，没有就不调 LLM（省钱） |
+| 批量汇总 | 攒 X 分钟（默认 10）一起总结，省 token + 推送安静 |
+| 后台 flush | 惰性启动，首次有消息才起；插件卸载时 cancel |
+| LLM 降级 | LLM 不可用/超时 → 直接推目标 QQ 原始发言（标注「降级模式」） |
+| 推送目标 | 默认走管理员 QQ，可在 `alert_admin_qqs` 单独配预警接收人 |
+| 不存库 | 推完即弃，不建表不依赖 |
+| 群里无痕 | 不回复、不表态，只私聊推给你 |
+| 独立链路 | 与定时日报、Telegram 拦截器完全独立 |
+
 ---
 
 ## 行为矩阵
 
 `enable_admin_notify` 开关下的所有触发路径：
 
-| 触发方式 | 开关 ON | 开关 OFF |
-|----------|---------|----------|
+| 触发方式 | 开关 ON（定制默认） | 开关 OFF |
+|----------|---------------------|----------|
 | 定时任务（到点自动跑） | 私聊管理员，不发群 | 发群（上游原行为） |
 | 手动 `/群分析` 命令 | 群里回"已私聊发送"，报告私聊管理员 | 发群（上游原行为） |
 
@@ -106,12 +200,30 @@
 
 ## 部署时的前置条件（让私聊推送真正工作）
 
-1. **开启开关**：插件配置 → `admin_notify.enable_admin_notify` = true
+1. **确认开关**：插件配置 → `admin_notify.enable_admin_notify` = true（定制版新装默认已开；旧配置需手动确认）
 2. **填管理员真实 QQ**（二选一）：
    - AstrBot 通用设置 → `admins_id`（推荐，所有插件共享）
    - 或插件配置 → `admin_notify.extra_admin_qq`
 3. **napcat 登录的 QQ 与管理员 QQ 互为好友**：OneBot 的 `send_private_msg` 要求双方好友关系，否则发不出（日志会显示「私聊发送 xxx 返回失败」）。
-4. **配置定时任务**：`auto_analysis.scheduled_group_list`（要分析的群号）+ `auto_analysis.auto_analysis_time`（出报告时间）。
+4. **配置单群白名单 + 定时任务**：
+   - `basic.group_list_mode` = `whitelist`
+   - `basic.group_list` = `["onebot:GroupMessage:你的群号"]`
+   - `auto_analysis.scheduled_group_list` = 同上
+   - `auto_analysis.auto_analysis_time`（默认 `["23:00"]`）
+5. **注意**：`whitelist` + 空列表 = 没有任何群可用 / 不会开定时任务，必须先填群号。
+
+### 启用实时消息监控（盯人预警）
+
+1. **开启开关**：`message_monitor.enable_monitor` = `true`
+2. **填监控群**（必填）：`message_monitor.monitored_groups` = `["群号"]`（插件会攒这些群里所有人的消息作为上下文）
+3. **填目标 QQ**：`message_monitor.monitored_qqs` = `["目标QQ号"]`（LLM 重点提取这些人的发言）
+4. **自定义关键词**（可选）：`message_monitor.extra_keywords` = `["破解", "激活码", "资源"]`
+5. **汇总间隔**（可选）：`message_monitor.flush_interval` = `10`（分钟，默认 10，建议 5~30）
+6. **上下文条数**（可选）：`message_monitor.max_context_messages` = `50`（默认 50，建议 30~100）
+7. **推送目标**（可选）：`message_monitor.alert_admin_qqs` = `["你的QQ"]`（空=复用管理员 QQ）
+8. **好友关系**：同上，bot QQ 与推送目标需互为好友
+
+**默认行为**：开关 `false`（需手动开）；`use_llm_confirm` = `true`；`flush_interval` = `10` 分钟；`max_context_messages` = `50`。
 
 ---
 

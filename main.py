@@ -1,8 +1,8 @@
 """
-群日常分析插件
-基于群聊记录生成精美的日常分析报告，包含话题总结、用户画像、统计数据等
+群聊情报日报插件（xms 定制）
+从群聊记录挖掘有价值信息（话题 / 信息差 / 商机 / 干货），定时私聊推送给管理员。
 
-重构版本 - 使用模块化架构，支持跨平台
+保留图片 / 文本 / HTML 输出与 prompt 自定义；已关闭用户称号/MBTI、聊天质量锐评等娱乐功能。
 """
 
 import asyncio
@@ -27,6 +27,7 @@ from .src.application.services.analysis_application_service import (
 from .src.application.services.message_processing_service import (
     MessageProcessingService,
 )
+from .src.application.services.message_monitor_service import MessageMonitorService
 from .src.domain.services.analysis_domain_service import AnalysisDomainService
 from .src.domain.services.incremental_merge_service import IncrementalMergeService
 from .src.domain.services.statistics_service import StatisticsService
@@ -68,6 +69,7 @@ class GroupDailyAnalysis(Star):
     incremental_merge_service: IncrementalMergeService
     analysis_service: AnalysisApplicationService
     message_processing_service: MessageProcessingService
+    message_monitor_service: MessageMonitorService
     template_command_service: TemplateCommandService
     telegram_template_preview_handler: TelegramTemplatePreviewHandler
     template_preview_router: TemplatePreviewRouter
@@ -119,6 +121,10 @@ class GroupDailyAnalysis(Star):
         # 消息处理服务
         self.message_processing_service = MessageProcessingService(
             context, self.telegram_group_registry
+        )
+        # 实时消息监控服务（盯人预警：QQ 群实时监听 → 正则预筛 → LLM 确认 → 私聊推送）
+        self.message_monitor_service = MessageMonitorService(
+            context, self.config_manager, self.bot_manager
         )
         self.template_command_service = TemplateCommandService(
             plugin_root=os.path.dirname(__file__)
@@ -254,6 +260,10 @@ class GroupDailyAnalysis(Star):
                 logger.debug("正在停止自动调度器...")
                 self.auto_scheduler.unschedule_jobs(self.context)
 
+            # 停止实时消息监控的后台 flush 任务
+            if self.message_monitor_service:
+                self.message_monitor_service.stop()
+
             if self.template_preview_router:
                 await self.template_preview_router.unregister_handlers()
 
@@ -286,6 +296,22 @@ class GroupDailyAnalysis(Star):
             logger.warning(f"[Telegram] 消息存储失败: {e}")
         except Exception as e:
             logger.error(f"[Telegram] 消息存储异常: {e}", exc_info=True)
+
+    # ==================== QQ 消息实时监控（盯人预警） ====================
+
+    @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
+    @filter.platform_adapter_type(filter.PlatformAdapterType.AIOCQHTTP)
+    async def monitor_qq_messages(self, event: AstrMessageEvent):
+        """
+        实时监听 QQ 群消息（OneBot/aiocqhttp）。
+
+        盯特定 QQ 在特定群的发言，命中有用信息（API key/资源/商机等）
+        立即私聊推送给管理员。不阻塞、不回复群消息，只做侧路推送。
+        """
+        try:
+            await self.message_monitor_service.process(event)
+        except Exception as e:
+            logger.error(f"[Monitor] 监控异常: {e}", exc_info=True)
 
     async def get_telegram_seen_group_ids(
         self, platform_id: str | None = None

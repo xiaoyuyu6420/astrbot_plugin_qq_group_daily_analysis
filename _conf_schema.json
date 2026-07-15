@@ -1,14 +1,14 @@
 {
   "admin_notify": {
-    "description": "管理员私聊通知（定制：定时报告改发管理员私聊）",
+    "description": "管理员私聊推送（情报及时送达）",
     "type": "object",
-    "hint": "开启后，定时生成的报告会私聊发给管理员，不再发回群聊。管理员 QQ 自动读取 AstrBot 超级管理员配置，也可在下面补充额外 QQ。注意：napcat 登录的 QQ 需与这些管理员 QQ 互为好友，否则私聊发不出。",
+    "hint": "开启后报告只私聊管理员、不发群。管理员 QQ 读取 AstrBot 超级管理员，也可额外补充。注意：bot 与管理员需互为好友。",
     "items": {
       "enable_admin_notify": {
         "type": "bool",
-        "default": false,
+        "default": true,
         "description": "开启管理员私聊通知",
-        "hint": "开启=定时报告只私聊管理员、不发群；关闭=原行为（发群）。"
+        "hint": "定制版默认开启。开启=定时报告只私聊管理员、不发群；关闭=原行为（发群）。"
       },
       "extra_admin_qq": {
         "type": "list",
@@ -21,15 +21,82 @@
       }
     }
   },
-  "prompts": {
-    "description": "提示词模板",
+  "message_monitor": {
+    "description": "实时消息监控（盯人预警·整窗汇总）",
     "type": "object",
-    "hint": "LLM 分析使用的提示词模板配置，可自定义各项分析的提示词内容",
+    "hint": "实时监听监控群里的【所有人】发言，每 X 分钟攒一个完整对话窗口，让 LLM 在完整上下文里提取目标 QQ 的有价值信息，推一条汇总给你。整窗模式：群聊是多人的对话，只看一个人的话容易语义歧义，攒完整上下文才能准确判断价值。需要 bot 与推送目标 QQ 互为好友。",
+    "items": {
+      "enable_monitor": {
+        "type": "bool",
+        "default": false,
+        "description": "开启实时消息监控",
+        "hint": "开启后，下面配置的 QQ 在群里发消息会被实时攒入缓冲区，每隔 flush_interval 分钟批量总结一次。关闭=不盯任何人。"
+      },
+      "monitored_qqs": {
+        "type": "list",
+        "description": "要盯的 QQ 号",
+        "default": [],
+        "hint": "要盯的 QQ 号（纯数字）。这些人的发言会被 LLM 重点提取。群里的其他人消息作为上下文，帮助判断目标发言的价值。",
+        "items": {
+          "type": "string"
+        }
+      },
+      "monitored_groups": {
+        "type": "list",
+        "description": "监控群列表（必填）",
+        "default": [],
+        "hint": "要监控的群号（纯数字）。必填——插件会攒这些群里的【所有人】消息作为上下文，让 LLM 在完整对话中判断目标 QQ 的发言是否有价值。空=不盯任何群。",
+        "items": {
+          "type": "string"
+        }
+      },
+      "extra_keywords": {
+        "type": "list",
+        "description": "自定义关键词",
+        "default": [],
+        "hint": "除了内置规则（API key/链接/提取码等），额外想盯的关键词。例如 [\"破解\", \"激活码\", \"资源\", \"分享\"]。",
+        "items": {
+          "type": "string"
+        }
+      },
+      "use_llm_confirm": {
+        "type": "bool",
+        "default": true,
+        "description": "用 LLM 二次确认",
+        "hint": "每个批次用 LLM 提取有价值信息（推荐）。关闭=批次到了直接推原始消息（省钱但噪音多）。LLM 不可用时自动降级为此模式。"
+      },
+      "flush_interval": {
+        "type": "int",
+        "default": 10,
+        "description": "汇总间隔（分钟）",
+        "hint": "每隔多少分钟把积攒的消息批量总结推送一次。太短=推送频繁/费 token；太长=信息不够及时。建议 5~30，默认 10。"
+      },
+      "max_context_messages": {
+        "type": "int",
+        "default": 50,
+        "description": "对话窗口最大条数",
+        "hint": "送给 LLM 的对话上下文最多多少条。超出时只保留目标 QQ 发言附近的上下文。太小=上下文不足易歧义；太大=费 token。建议 30~100，默认 50。"
+      },
+      "alert_admin_qqs": {
+        "type": "list",
+        "description": "预警推送目标 QQ",
+        "default": [],
+        "hint": "预警私聊发给谁。空=复用管理员 QQ（AstrBot 超管 + admin_notify.extra_admin_qq）；填了=只发给这些 QQ。",
+        "items": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "prompts": {
+    "description": "提示词模板（话题 + 信息差，可自定义）",
+    "type": "object",
+    "hint": "定制版只保留有价值信息相关提示词：话题分析、信息差/商机/干货提取。可按群聊内容自行优化。",
     "items": {
       "topic_analysis_prompts": {
-        "description": "话题分析提示词模板",
+        "description": "有价值话题分析提示词",
         "type": "object",
-        "hint": "话题分析提示词模板，可自定义修改，保留变量 ${max_topics} 和 ${messages_text} 写法不要更改，需要写 JSON 块请使用双花括号 {{ ... }} 兼容当前编辑存在的问题。非常推荐根据实际群聊情况进行优化，保留一定提示样本示例供模型参考",
+        "hint": "提取有讨论价值话题的提示词。可自定义修改，保留变量 ${max_topics} 和 ${messages_text}，JSON 示例请用双花括号 {{ ... }}。",
         "items": {
           "topic_prompt": {
             "description": "默认话题分析提示词",
@@ -40,24 +107,10 @@
           }
         }
       },
-      "user_title_analysis_prompts": {
-        "description": "用户称号分析提示词模板",
-        "type": "object",
-        "hint": "用户称号分析提示词模板，可自定义修改，保留变量 ${users_text} 写法不要更改，需要写 JSON 块请使用双花括号 {{ ... }} 兼容当前编辑存在的问题。非常推荐根据实际群聊情况进行优化，保留一定提示样本示例供模型参考",
-        "items": {
-          "user_title_prompt": {
-            "description": "默认用户称号分析提示词",
-            "type": "text",
-            "editor_mode": true,
-            "editor_language": "markdown",
-            "default": "请为以下群友分配合适的称号和 MBTI 类型。\n\n## 规则：\n\n- 每个人只能有一个称号\n- 每个称号只能给一个人\n\n## 可选称号：\n\n- **龙王**: 发言频繁但内容轻松的人\n- **技术专家**: 经常讨论技术话题的人\n- **夜猫子**: 经常在深夜发言的人\n- **表情包军火库**: 经常发表情的人\n- **沉默终结者**: 经常开启话题的人\n- **评论家**: 平均发言长度很长的人\n- **阳角**: 在群里很有影响力的人\n- **互动达人**: 经常回复别人的人\n- *...（你可以自行进行拓展添加）*\n\n## 用户数据：\n\n${users_text}\n\n---\n\n### 返回格式示例：\n\n```json\n[\n  {{\n    \"name\": \"用户名\",\n    \"user_id\": \"123456789\",\n    \"title\": \"称号\",\n    \"mbti\": \"MBTI类型\",\n    \"reason\": \"获得此称号的原因\"\n  }}\n]\n```\n\n**注意**：请以纯 JSON 格式返回，不要包含 markdown 代码块标记。"
-          }
-        }
-      },
       "golden_quote_analysis_prompts": {
-        "description": "信息差/商机/干货提取提示词（定制版，原金句分析）",
+        "description": "信息差/商机/干货提取提示词",
         "type": "object",
-        "hint": "金句分析提示词模板，可自定义修改，保留变量 ${max_golden_quotes} 和 ${messages_text} 写法不要更改，需要写 JSON 块请使用双花括号 {{ ... }} 兼容当前编辑存在的问题。非常推荐根据实际群聊情况进行优化，保留一定提示样本示例供模型参考",
+        "hint": "提取有价值信息的提示词。可自定义修改，保留变量 ${max_golden_quotes} 和 ${messages_text}，JSON 示例请用双花括号 {{ ... }}。",
         "items": {
           "golden_quote_v2_prompt": {
             "description": "信息差/商机提取提示词（定制版）",
@@ -67,88 +120,49 @@
             "default": "请从以下群聊记录中提取 **${max_golden_quotes}** 条最有价值的信息（信息差/商机/干货）。\n\n## 价值标准（按优先级从高到低）：\n\n1. **搞钱商机**：项目、副业、变现思路、套利机会、合作机会、赚钱路子\n2. **资源干货**：好用的工具、教程、资料、渠道、产品推荐、省钱技巧\n3. **行业情报**：行业内幕、一手消息、趋势判断、稀缺信息、政策变化\n4. **认知差**：能让人\"原来还可以这样\"的思维洞见、经验总结、方法论\n\n## 对于每条信息，请提供：\n\n1. **原文内容**（完整保留发言细节，不要改写）\n2. **发言人用户ID**（必须严格使用消息记录中提供的 [用户ID]）\n3. **价值说明**（具体说明这条信息的价值点：是商机/资源/情报/认知？为什么有用）\n\n## 严格约束：\n\n- **必须忽略**：闲聊灌水、表情包、单纯玩梗、网络热词堆砌、无意义的情绪宣泄\n- 优先筛选**价值密度最高、最可行动**的内容\n- 如果整段聊天确实没有有价值的信息，返回空数组 []（宁缺毋滥，不要硬凑）\n- **用户引用**：在价值说明（reason）中提到具体用户时，使用 `[用户ID]` 格式（例如 `[123456]`），不要只写昵称，系统会自动渲染头像\n- **身份对齐**：返回的 `sender` 字段必须是 `[用户ID]` 格式（例如 `[123456]`）\n\n## 群聊记录格式: [HH:MM] [用户ID]: 消息内容\n\n## 群聊记录：\n\n${messages_text}\n\n---\n\n### 返回格式示例：\n\n```json\n[\n  {{\n    \"content\": \"原文内容\",\n    \"sender\": \"[123456789]\",\n    \"reason\": \"这是一条搞钱商机：[123456789] 分享了xxx变现思路，价值在于...\"\n  }}\n]\n```\n\n**注意**：返回的内容必须是纯 JSON，不要包含 markdown 代码块标记或其他格式。"
           }
         }
-      },
-      "quality_analysis_prompts": {
-        "description": "聊天质量分析提示词模板",
-        "type": "object",
-        "hint": "聊天质量分析提示词模板，可自定义修改",
-        "items": {
-          "quality_v2_prompt": {
-            "description": "默认聊天质量分析提示词",
-            "type": "text",
-            "editor_mode": true,
-            "editor_language": "markdown",
-            "default": "请分析以下群聊记录，输出一份\"聊天质量锐评\"。\n\n## 任务目标：\n1. **维度划分**：将聊天内容划分为 3-6 个【高层级、抽象、泛化】的维度（例如：就业焦虑、生涯规划、技术方案研究、情感树洞、无意义水群等）。\n2. **严禁在维度名称（name）中出现任何具体的群聊人物名、项目名、具体的报错内容或细碎的事件点。标题必须保持高度抽象且字数简练（2-6个字）。**\n3. 为每个维度计算一个大致的百分比占位（总和小于等于 100%）。\n4. **点评内容**：为每个维度写一句符合你当前人格设定的犀利、幽默或温情的点评。具体的吐槽内容、具体的细节事件描述请放在这里。\n5. **全群表现**：给出一句总结性的评价，作为总结标题对应的“金句”。\n6. **主题设定**：设定一个本次报告的主题标题和副标题。\n\n## 点评风格指南：\n- 语言要接地气，多用互联网黑话。吐槽要精准，避重就轻。\n- **只有维度名称（name）需要抽象，点评（comment）和总结（summary）可以非常具体和生动。**\n\n## 返回格式要求：\n必须以纯 JSON 格式返回，不得包含任何 Markdown 格式。\n\n```json\n{{\n  \"title\": \"今日群聊主题\",\n  \"subtitle\": \"副标题\",\n  \"dimensions\": [\n    {{\n      \"name\": \"抽象维度名\",\n      \"percentage\": 比例,\n      \"comment\": \"与该维度相关的锐评，请务必保持你的人设口吻\"\n    }}\n  ],\n  \"summary\": \"一句总结性的金句\"\n}}\n```\n\n群聊记录：\n${messages_text}"
-          },
-          "quality_summary_prompt": {
-            "description": "增量汇总聊天质量分析提示词",
-            "type": "text",
-            "editor_mode": true,
-            "editor_language": "markdown",
-            "default": "你现在有一份今天全天分散时间段的多个“增量批次点评笔记”。\n你的任务是将这些分散的笔记汇总成一份最终的“全天聊天质量终极锐评”。\n\n## 任务目标：\n1. **全局抽象维度**：根据各批次的维度表现，平衡权重，提取出 3-6 个覆盖全天的【核心、上层抽象】课题维度（如：职场/行业风向、技术架构演进、社畜心理博弈等）。\n2. **严禁在维度名称（name）中出现具体的批次细节。标题必须代表全天的某种趋势。**\n3. **百分比融合**：根据全天笔记的频率和强度，给出一个代表全天整体分布的比例（总和不超过100%）。\n4. **终极点评**：为每个汇总维度写出一句符合你当前人设且升华后的全天总结性点评。可以融合具体批次中的有趣槽点。\n5. **终极总结**：拟定全天的大型主题标题、副标题，并给出一句霸气的全天表现总结。\n\n## 风格要求：\n- 只有维度名称（name）需要高度概括抽象。\n- 点评（comment）和总结（summary）请尽量生动、具体，要把一整天的梗串联起来。\n\n## 返回格式要求：\n必须以纯 JSON 格式返回，不得包含任何 Markdown 格式。\n\n```json\n{{\n  \"title\": \"今日群聊主题\",\n  \"subtitle\": \"副标题\",\n  \"dimensions\": [\n    {{\n      \"name\": \"抽象大类标题\",\n      \"percentage\": 比例,\n      \"comment\": \"全天的锐评总结，请务必保持你的人设口吻\"\n    }}\n  ],\n  \"summary\": \"全天总结金句\"\n}}\n```\n\n增量汇总数据：\n${reviews_text}"
-          }
-        }
       }
     }
   },
   "analysis_features": {
-    "description": "分析功能开关",
+    "description": "信息分析功能开关",
     "type": "object",
-    "hint": "控制各项 LLM 分析功能的启用状态和数量限制",
+    "hint": "定制版聚焦有价值信息：话题 + 信息差/干货。用户称号/MBTI、聊天质量锐评等娱乐功能已移除。",
     "items": {
       "topic_analysis_enabled": {
         "type": "bool",
-        "description": "启用话题分析",
+        "description": "启用有价值话题分析",
         "default": true,
-        "hint": "是否使用LLM进行智能话题分析"
-      },
-      "user_title_analysis_enabled": {
-        "type": "bool",
-        "description": "启用用户称号分析",
-        "default": false,
-        "hint": "是否使用LLM进行用户称号分析"
+        "hint": "使用 LLM 提取有信息量、有深度的讨论话题"
       },
       "golden_quote_analysis_enabled": {
         "type": "bool",
-        "description": "启用金句分析",
+        "description": "启用信息差/干货提取",
         "default": true,
-        "hint": "是否使用LLM进行金句分析"
-      },
-      "chat_quality_analysis_enabled": {
-        "type": "bool",
-        "description": "启用聊天质量锐评",
-        "default": false,
-        "hint": "是否使用LLM进行聊天质量锐评（维度化分析）"
+        "hint": "使用 LLM 提取商机、资源、情报、认知差等可行动信息"
       },
       "max_topics": {
         "type": "int",
         "description": "最大话题数量",
         "default": 5,
-        "hint": "分析报告中显示的最大话题数量，依赖于 LLM 输出的格式化信息质量，模型越好结果越好，可能出现数量不匹配。"
-      },
-      "max_user_titles": {
-        "type": "int",
-        "description": "最大用户称号数量",
-        "default": 8,
-        "hint": "分析报告中显示的最大用户称号数量，依赖于 LLM 输出的格式化信息质量，模型越好结果越好，可能出现数量不匹配。"
+        "hint": "报告中最多展示的话题数"
       },
       "max_golden_quotes": {
         "type": "int",
-        "description": "最大金句数量",
-        "default": 5,
-        "hint": "分析报告中显示的最大金句数量，依赖于 LLM 输出的格式化信息质量，模型越好结果越好，可能出现数量不匹配。"
+        "description": "最大信息差条目数",
+        "default": 8,
+        "hint": "报告中最多展示的信息差/干货条数"
       },
       "keep_original_persona": {
         "description": "继承会话人设风格",
         "type": "bool",
         "default": false,
-        "hint": "【优先级2】开启后将自动尝试识别当前群聊会话（或对话）的人格设定。若该群已设置人设，则分析报告会尽量模拟该人设的口吻进行回复。注意：此开关在“强制使用插件指定人格”关闭时才会生效。"
+        "hint": "开启后尽量沿用当前会话人设口吻生成分析文案（非娱乐画像功能）。"
       },
       "use_plugin_specific_persona": {
         "description": "强制使用插件指定人格",
         "type": "bool",
         "default": false,
-        "hint": "【优先级1：核心开关】若开启，将完全忽略当前群聊的人格设定，统一强制使用下方选择的“插件指定人格 ID”进行分析。适用于希望全群分析保持某种统一固定风格（如特定的“记录员”人设）的情况。"
+        "hint": "开启后强制使用下方指定人格 ID，忽略群人设。适合统一成「情报记录员」风格。"
       },
       "plugin_specific_persona_id": {
         "description": "插件指定人格 ID",
@@ -199,7 +213,7 @@
   "basic": {
     "description": "基础设置",
     "type": "object",
-    "hint": "群聊分析插件的基础配置项，包括群聊权限、消息数量、输出格式等。注意：基础群权限是第一道门槛，不通过就不会进入定时/增量流程。",
+    "hint": "群权限、消息量、输出格式与报告模板。输出方式（图片/文本/HTML）与模板风格仍可自定义。",
     "items": {
       "group_list_mode": {
         "description": "群聊权限模式",
@@ -209,8 +223,8 @@
           "blacklist",
           "none"
         ],
-        "default": "none",
-        "hint": "先决定“哪些群可以用这个插件”。这是第一道门槛：不通过这里，后面的定时/增量都不会触发。whitelist=只允许列表里的群；blacklist=屏蔽列表里的群；none=所有群都可以。示例：whitelist + [\"onebot:GroupMessage:123456\"] 表示只有这个群能用。"
+        "default": "whitelist",
+        "hint": "定制版默认 whitelist（单群监控更安全）。先决定“哪些群可以用这个插件”。这是第一道门槛：不通过这里，后面的定时/增量都不会触发。whitelist=只允许列表里的群；blacklist=屏蔽列表里的群；none=所有群都可以。示例：whitelist + [\"onebot:GroupMessage:123456\"] 表示只有这个群能用。注意：whitelist + 空列表 = 没有任何群可用，需先填 group_list。"
       },
       "group_list": {
         "type": "list",
@@ -236,8 +250,8 @@
       "min_messages_threshold": {
         "type": "int",
         "description": "最小消息数阈值",
-        "default": 200,
-        "hint": "进行分析所需的最小消息数量"
+        "default": 50,
+        "hint": "进行分析所需的最小消息数量。定制版默认 50，避免安静情报群整天不出报告。"
       },
       "bot_self_ids": {
         "type": "list",
@@ -263,7 +277,7 @@
           "html"
         ],
         "default": "image",
-        "hint": "选择分析报告的输出方式：image(图片)、text(纯文本摘要)、html(可交互式网页文件)"
+        "hint": "报告输出方式：image（图片）、text（纯文本）、html（网页）。管理员私聊模式下优先图片，失败回退文本。"
       },
       "report_template": {
         "type": "string",
@@ -278,43 +292,8 @@
           "simple",
           "format"
         ],
-        "default": "scrapbook",
-        "hint": "分析报告使用的HTML模板名称，QQ 端可以使用 `/设置模板` 查看使用指南，使用`/查看模板` 命令查看模板样式效果。其他平台不支持合并转发，可以到 [模板](https://github.com/SXP-Simon/astrbot_plugin_qq_group_daily_analysis/tree/main/assets) 文件夹中查看模板样式效果"
-      },
-      "profile_display_mode": {
-        "type": "string",
-        "description": "人格标签展示模式",
-        "options": [
-          "mbti",
-          "sbti",
-          "acgti"
-        ],
-        "default": "mbti",
-        "hint": "只影响群友画像卡片的角色主题展示，不影响实际 MBTI 分析结果。mbti=原始 MBTI，sbti=映射为 SBTI 人格，acgti=映射为 ACGTI 角色。"
-      },
-      "profile_image_opacity": {
-        "type": "float",
-        "description": "人格背景图透明度",
-        "default": 0.12,
-        "hint": "建议 0.08~0.18，仅作为卡片底层装饰，避免遮挡正文。"
-      },
-      "profile_image_size_mode": {
-        "type": "string",
-        "description": "人格背景图尺寸模式",
-        "options": [
-          "contain",
-          "cover"
-        ],
-        "default": "contain",
-        "hint": "建议默认 contain，减少角色图被裁切过多的问题。"
-      },
-      "profile_mapping_config": {
-        "type": "text",
-        "description": "人格映射配置(JSON)",
-        "editor_mode": true,
-        "editor_language": "json",
-        "default": "{\n    \"mbti\": {\n        \"INTJ\": {\n            \"code\": \"INTJ\",\n            \"name_zh\": \"建筑师\"\n        },\n        \"INTP\": {\n            \"code\": \"INTP\",\n            \"name_zh\": \"逻辑学家\"\n        },\n        \"ENTJ\": {\n            \"code\": \"ENTJ\",\n            \"name_zh\": \"指挥官\"\n        },\n        \"ENTP\": {\n            \"code\": \"ENTP\",\n            \"name_zh\": \"辩论家\"\n        },\n        \"INFJ\": {\n            \"code\": \"INFJ\",\n            \"name_zh\": \"提倡者\"\n        },\n        \"INFP\": {\n            \"code\": \"INFP\",\n            \"name_zh\": \"调停者\"\n        },\n        \"ENFJ\": {\n            \"code\": \"ENFJ\",\n            \"name_zh\": \"主人公\"\n        },\n        \"ENFP\": {\n            \"code\": \"ENFP\",\n            \"name_zh\": \"竞选者\"\n        },\n        \"ISTJ\": {\n            \"code\": \"ISTJ\",\n            \"name_zh\": \"物流师\"\n        },\n        \"ISFJ\": {\n            \"code\": \"ISFJ\",\n            \"name_zh\": \"守卫者\"\n        },\n        \"ESTJ\": {\n            \"code\": \"ESTJ\",\n            \"name_zh\": \"总经理\"\n        },\n        \"ESTP\": {\n            \"code\": \"ESTP\",\n            \"name_zh\": \"企业家\"\n        },\n        \"ISTP\": {\n            \"code\": \"ISTP\",\n            \"name_zh\": \"鉴赏家\"\n        },\n        \"ISFP\": {\n            \"code\": \"ISFP\",\n            \"name_zh\": \"探险家\"\n        },\n        \"ESFJ\": {\n            \"code\": \"ESFJ\",\n            \"name_zh\": \"执政官\"\n        },\n        \"ESFP\": {\n            \"code\": \"ESFP\",\n            \"name_zh\": \"表演者\"\n        }\n    },\n    \"sbti\": {\n        \"INTJ\": {\n            \"code\": \"CTRL\",\n            \"name_zh\": \"拿捏者\",\n            \"asset_code\": \"CTRL\",\n            \"image\": \"https://fastly.jsdelivr.net/gh/SXP-Simon/profile_assets@main/sbti/CTRL.png\"\n        },\n        \"INTP\": {\n            \"code\": \"THIN-K\",\n            \"name_zh\": \"思考者\",\n            \"asset_code\": \"THIN-K\",\n            \"image\": \"https://fastly.jsdelivr.net/gh/SXP-Simon/profile_assets@main/sbti/THIN-K.png\"\n        },\n        \"ENTJ\": {\n            \"code\": \"BOSS\",\n            \"name_zh\": \"领导者\",\n            \"asset_code\": \"BOSS\",\n            \"image\": \"https://fastly.jsdelivr.net/gh/SXP-Simon/profile_assets@main/sbti/BOSS.png\"\n        },\n        \"ENTP\": {\n            \"code\": \"JOKE-R\",\n            \"name_zh\": \"小丑\",\n            \"asset_code\": \"JOKE-R\",\n            \"image\": \"https://fastly.jsdelivr.net/gh/SXP-Simon/profile_assets@main/sbti/JOKE-R.jpg\"\n        },\n        \"INFJ\": {\n            \"code\": \"LOVE-R\",\n            \"name_zh\": \"多情者\",\n            \"asset_code\": \"LOVE-R\",\n            \"image\": \"https://fastly.jsdelivr.net/gh/SXP-Simon/profile_assets@main/sbti/LOVE-R.png\"\n        },\n        \"INFP\": {\n            \"code\": \"SOLO\",\n            \"name_zh\": \"孤儿\",\n            \"asset_code\": \"SOLO\",\n            \"image\": \"https://fastly.jsdelivr.net/gh/SXP-Simon/profile_assets@main/sbti/SOLO.png\"\n        },\n        \"ENFJ\": {\n            \"code\": \"THAN-K\",\n            \"name_zh\": \"感恩者\",\n            \"asset_code\": \"THAN-K\",\n            \"image\": \"https://fastly.jsdelivr.net/gh/SXP-Simon/profile_assets@main/sbti/THAN-K.png\"\n        },\n        \"ENFP\": {\n            \"code\": \"GOGO\",\n            \"name_zh\": \"行者\",\n            \"asset_code\": \"GOGO\",\n            \"image\": \"https://fastly.jsdelivr.net/gh/SXP-Simon/profile_assets@main/sbti/GOGO.png\"\n        },\n        \"ISTJ\": {\n            \"code\": \"OH-NO\",\n            \"name_zh\": \"哦不人\",\n            \"asset_code\": \"OH-NO\",\n            \"image\": \"https://fastly.jsdelivr.net/gh/SXP-Simon/profile_assets@main/sbti/OH-NO.png\"\n        },\n        \"ISTP\": {\n            \"code\": \"POOR\",\n            \"name_zh\": \"贫困者\",\n            \"asset_code\": \"POOR\",\n            \"image\": \"https://fastly.jsdelivr.net/gh/SXP-Simon/profile_assets@main/sbti/POOR.png\"\n        },\n        \"ESTJ\": {\n            \"code\": \"SHIT\",\n            \"name_zh\": \"愤世者\",\n            \"asset_code\": \"SHIT\",\n            \"image\": \"https://fastly.jsdelivr.net/gh/SXP-Simon/profile_assets@main/sbti/SHIT.png\"\n        },\n        \"ESTP\": {\n            \"code\": \"WOC!\",\n            \"name_zh\": \"握草人\",\n            \"asset_code\": \"WOC\",\n            \"image\": \"https://fastly.jsdelivr.net/gh/SXP-Simon/profile_assets@main/sbti/WOC.png\"\n        },\n        \"ISFJ\": {\n            \"code\": \"MUM\",\n            \"name_zh\": \"妈妈\",\n            \"asset_code\": \"MUM\",\n            \"image\": \"https://fastly.jsdelivr.net/gh/SXP-Simon/profile_assets@main/sbti/MUM.png\"\n        },\n        \"ISFP\": {\n            \"code\": \"MALO\",\n            \"name_zh\": \"吗喽\",\n            \"asset_code\": \"MALO\",\n            \"image\": \"https://fastly.jsdelivr.net/gh/SXP-Simon/profile_assets@main/sbti/MALO.png\"\n        },\n        \"ESFJ\": {\n            \"code\": \"ATM-er\",\n            \"name_zh\": \"送钱者\",\n            \"asset_code\": \"ATM-er\",\n            \"image\": \"https://fastly.jsdelivr.net/gh/SXP-Simon/profile_assets@main/sbti/ATM-er.png\"\n        },\n        \"ESFP\": {\n            \"code\": \"SEXY\",\n            \"name_zh\": \"尤物\",\n            \"asset_code\": \"SEXY\",\n            \"image\": \"https://fastly.jsdelivr.net/gh/SXP-Simon/profile_assets@main/sbti/SEXY.png\"\n        }\n    },\n    \"acgti\": {\n        \"INTJ\": {\n            \"code\": \"MRTS-X\",\n            \"name_zh\": \"Mortis\",\n            \"image\": \"https://fastly.jsdelivr.net/gh/SXP-Simon/profile_assets@main/acgti/characters/MRTS-X.png\"\n        },\n        \"INTP\": {\n            \"code\": \"KNAN\",\n            \"name_zh\": \"江户川柯南\"\n        },\n        \"ENTJ\": {\n            \"code\": \"SAKI\",\n            \"name_zh\": \"丰川祥子\",\n            \"image\": \"https://fastly.jsdelivr.net/gh/SXP-Simon/profile_assets@main/acgti/characters/SAKI.png\"\n        },\n        \"ENTP\": {\n            \"code\": \"CHKA\",\n            \"name_zh\": \"藤原千花\"\n        },\n        \"INFJ\": {\n            \"code\": \"DLRS\",\n            \"name_zh\": \"三角初华\",\n            \"image\": \"https://fastly.jsdelivr.net/gh/SXP-Simon/profile_assets@main/acgti/characters/DLRS.png\"\n        },\n        \"INFP\": {\n            \"code\": \"BCHI\",\n            \"name_zh\": \"后藤一里\"\n        },\n        \"ENFJ\": {\n            \"code\": \"YCYO\",\n            \"name_zh\": \"月见八千代\",\n            \"image\": \"https://fastly.jsdelivr.net/gh/SXP-Simon/profile_assets@main/acgti/characters/YCYO.png\"\n        },\n        \"ENFP\": {\n            \"code\": \"HTMK\",\n            \"name_zh\": \"初音未来\"\n        },\n        \"ISTJ\": {\n            \"code\": \"MRTS\",\n            \"name_zh\": \"若叶睦\",\n            \"image\": \"https://fastly.jsdelivr.net/gh/SXP-Simon/profile_assets@main/acgti/characters/MRTS.png\"\n        },\n        \"ISTP\": {\n            \"code\": \"AYRE\",\n            \"name_zh\": \"绫波丽\"\n        },\n        \"ESTJ\": {\n            \"code\": \"MIKT\",\n            \"name_zh\": \"御坂美琴\",\n            \"image\": \"https://fastly.jsdelivr.net/gh/SXP-Simon/profile_assets@main/acgti/characters/MIKT.png\"\n        },\n        \"ESTP\": {\n            \"code\": \"ASKA\",\n            \"name_zh\": \"明日香\"\n        },\n        \"ISFJ\": {\n            \"code\": \"SOYO\",\n            \"name_zh\": \"长崎爽世\",\n            \"image\": \"https://fastly.jsdelivr.net/gh/SXP-Simon/profile_assets@main/acgti/characters/SOYO.png\"\n        },\n        \"ISFP\": {\n            \"code\": \"LTYI\",\n            \"name_zh\": \"洛天依\",\n            \"image\": \"https://fastly.jsdelivr.net/gh/SXP-Simon/profile_assets@main/acgti/characters/LTYI.png\"\n        },\n        \"ESFJ\": {\n            \"code\": \"ANON\",\n            \"name_zh\": \"千早爱音\",\n            \"image\": \"https://fastly.jsdelivr.net/gh/SXP-Simon/profile_assets@main/acgti/characters/ANON.png\"\n        },\n        \"ESFP\": {\n            \"code\": \"FRNA\",\n            \"name_zh\": \"芙宁娜\",\n            \"image\": \"https://fastly.jsdelivr.net/gh/SXP-Simon/profile_assets@main/acgti/characters/FRNA.png\"\n        }\n    }\n}",
-        "hint": "按 MBTI 覆盖当前展示模式的人格名称与图片地址。留空时自动使用插件内置默认映射和 manifest。插件不负责校验图片链接可访问性。"
+        "default": "simple",
+        "hint": "图片/HTML 报告使用的模板风格，可按喜好选择。不影响信息提取逻辑。"
       },
       "debug_mode": {
         "type": "bool",
@@ -355,26 +334,12 @@
         "default": "",
         "hint": "专门用于话题分析的 Provider。留空则使用主 LLM Provider"
       },
-      "user_title_provider_id": {
-        "type": "string",
-        "description": "用户称号分析专用 Provider ID",
-        "_special": "select_provider",
-        "default": "",
-        "hint": "专门用于用户称号分析的 Provider。留空则使用主 LLM Provider"
-      },
       "golden_quote_provider_id": {
         "type": "string",
-        "description": "金句分析专用 Provider ID",
+        "description": "信息差提取专用 Provider ID",
         "_special": "select_provider",
         "default": "",
-        "hint": "专门用于金句分析的 Provider。留空则使用主 LLM Provider"
-      },
-      "quality_provider_id": {
-        "type": "string",
-        "description": "聊天质量分析专用 Provider ID",
-        "_special": "select_provider",
-        "default": "",
-        "hint": "专门用于聊天质量锐评的 Provider。留空则使用主 LLM Provider"
+        "hint": "专门用于信息差/干货提取的 Provider。留空则使用主 LLM Provider"
       },
       "llm_retries": {
         "type": "int",

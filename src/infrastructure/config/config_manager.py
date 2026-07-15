@@ -38,7 +38,8 @@ class ConfigManager:
 
     def get_group_list_mode(self) -> str:
         """获取群组列表模式 (whitelist/blacklist/none)"""
-        return self._get_group("basic").get("group_list_mode", "none")
+        # 定制版默认 whitelist，与 _conf_schema.json 保持一致
+        return self._get_group("basic").get("group_list_mode", "whitelist")
 
     def get_group_list(self) -> list[str]:
         """获取群组列表（用于黑白名单）"""
@@ -158,22 +159,24 @@ class ConfigManager:
         return self._get_group("analysis_features").get("topic_analysis_enabled", True)
 
     def get_user_title_analysis_enabled(self) -> bool:
-        """获取是否启用用户称号分析"""
-        return self._get_group("analysis_features").get(
-            "user_title_analysis_enabled", True
-        )
+        """获取是否启用用户称号分析。
+
+        定制版已移除称号/MBTI 等娱乐功能，始终关闭，避免旧配置把娱乐分析重新打开。
+        """
+        return False
 
     def get_golden_quote_analysis_enabled(self) -> bool:
-        """获取是否启用金句分析"""
+        """获取是否启用信息差/干货提取（原金句分析）"""
         return self._get_group("analysis_features").get(
             "golden_quote_analysis_enabled", True
         )
 
     def get_chat_quality_analysis_enabled(self) -> bool:
-        """获取是否启用聊天质量分析"""
-        return self._get_group("analysis_features").get(
-            "chat_quality_analysis_enabled", False
-        )
+        """获取是否启用聊天质量锐评。
+
+        定制版已移除娱乐锐评，始终关闭，避免旧配置重新打开。
+        """
+        return False
 
     def get_max_topics(self) -> int:
         """获取最大话题数量"""
@@ -562,11 +565,68 @@ class ConfigManager:
 
     def is_admin_notify_enabled(self) -> bool:
         """是否开启「定时报告私聊管理员」模式（开启后不发群，只私聊管理员）"""
-        return bool(self._get_group("admin_notify").get("enable_admin_notify", False))
+        # 定制版默认开启，与 _conf_schema.json 保持一致
+        return bool(self._get_group("admin_notify").get("enable_admin_notify", True))
 
     def get_extra_admin_qqs(self) -> list[str]:
         """获取额外管理员 QQ 列表（除 AstrBot 超管外，额外接收报告的人）"""
         raw = self._get_group("admin_notify").get("extra_admin_qq", [])
+        if not isinstance(raw, list):
+            raw = [raw]
+        return [str(x).strip() for x in raw if str(x).strip()]
+
+    # ==================== 实时消息监控配置 ====================
+
+    def is_monitor_enabled(self) -> bool:
+        """是否开启实时消息监控（盯人预警）"""
+        return bool(self._get_group("message_monitor").get("enable_monitor", False))
+
+    def get_monitored_qqs(self) -> list[str]:
+        """要监控的 QQ 号列表"""
+        raw = self._get_group("message_monitor").get("monitored_qqs", [])
+        if not isinstance(raw, list):
+            raw = [raw]
+        return [str(x).strip() for x in raw if str(x).strip()]
+
+    def get_monitored_groups(self) -> list[str]:
+        """限定监控的群号列表（空=不限群）"""
+        raw = self._get_group("message_monitor").get("monitored_groups", [])
+        if not isinstance(raw, list):
+            raw = [raw]
+        return [str(x).strip() for x in raw if str(x).strip()]
+
+    def get_monitor_extra_keywords(self) -> list[str]:
+        """自定义监控关键词"""
+        raw = self._get_group("message_monitor").get("extra_keywords", [])
+        if not isinstance(raw, list):
+            raw = [raw]
+        return [str(x).strip() for x in raw if str(x).strip()]
+
+    def is_llm_confirm_enabled(self) -> bool:
+        """每个批次是否用 LLM 提取有价值信息"""
+        return bool(self._get_group("message_monitor").get("use_llm_confirm", True))
+
+    def get_flush_interval(self) -> int:
+        """批量汇总间隔（分钟）。每隔这么久把积攒的消息总结推送一次。"""
+        try:
+            val = int(self._get_group("message_monitor").get("flush_interval", 10))
+            return max(1, val)  # 至少 1 分钟
+        except (TypeError, ValueError):
+            return 10
+
+    def get_max_context_messages(self) -> int:
+        """送给 LLM 的对话窗口最大条数。超出则只保留目标 QQ 发言附近的上下文。"""
+        try:
+            val = int(
+                self._get_group("message_monitor").get("max_context_messages", 50)
+            )
+            return max(10, val)  # 至少 10 条，太少没上下文意义
+        except (TypeError, ValueError):
+            return 50
+
+    def get_alert_admin_qqs(self) -> list[str]:
+        """预警推送目标 QQ（空=回退到管理员列表）"""
+        raw = self._get_group("message_monitor").get("alert_admin_qqs", [])
         if not isinstance(raw, list):
             raw = [raw]
         return [str(x).strip() for x in raw if str(x).strip()]
@@ -615,22 +675,26 @@ class ConfigManager:
         self.config.save_config()
 
     def set_user_title_analysis_enabled(self, enabled: bool):
-        """设置是否启用用户称号分析"""
-        self._ensure_group("analysis_features")["user_title_analysis_enabled"] = enabled
+        """设置是否启用用户称号分析。
+
+        定制版已移除娱乐称号功能，强制写入 False，忽略传入值。
+        """
+        self._ensure_group("analysis_features")["user_title_analysis_enabled"] = False
         self.config.save_config()
 
     def set_golden_quote_analysis_enabled(self, enabled: bool):
-        """设置是否启用金句分析"""
+        """设置是否启用信息差/干货提取（原金句分析）"""
         self._ensure_group("analysis_features")["golden_quote_analysis_enabled"] = (
             enabled
         )
         self.config.save_config()
 
     def set_chat_quality_analysis_enabled(self, enabled: bool):
-        """设置是否启用聊天质量分析"""
-        self._ensure_group("analysis_features")["chat_quality_analysis_enabled"] = (
-            enabled
-        )
+        """设置是否启用聊天质量锐评。
+
+        定制版已移除娱乐锐评功能，强制写入 False，忽略传入值。
+        """
+        self._ensure_group("analysis_features")["chat_quality_analysis_enabled"] = False
         self.config.save_config()
 
     def set_max_topics(self, count: int):
