@@ -1,24 +1,20 @@
 """
-实时消息监控服务（定制版：盯人预警 · 整窗批量汇总模式）
+实时消息监控服务（定制版：盯人预警）
 
-监听监控群里的**所有人**发言，攒 X 分钟为窗口，
-让 LLM 在**完整对话上下文**中提取目标 QQ 的有价值信息。
+两种工作模式，由 message_monitor.monitor_mode 选择：
 
-为什么要整窗：群聊是多人对话，目标 QQ 单独说"这个能用""我也想要"
-脱离上下文就有歧义。攒整窗、标注每个人，LLM 才能准确判断。
+1. keyword（关键词即时模式）：
+   不限发送者，监控群里【任何人】的消息命中关键词/正则 → 立即推送。
+   可选用 LLM 二次确认（关掉就是纯规则即时推）。
+   适合：盯全群的关键词（API key、资源、特定词），要快。
+
+2. window（整窗汇总模式，默认）：
+   攒群里所有人的消息 X 分钟，LLM 在完整上下文里提取目标 QQ 的价值信息。
+   适合：盯特定 QQ，需要上下文消歧。
 
 架构（不侵入定时日报链路）：
-    群消息（所有人）→ 群在监控群列表？→ 攒入该群的缓冲区
-                                            │
-                    后台 flush 任务（每 X 分钟醒来）
-                                            │
-              按 max_context_messages 条数截断 → 标注发送者
-                                            │
-              该窗口内是否有目标 QQ 发言？否 → 跳过
-                                            │
-              批量 LLM 总结：在完整上下文里提取目标 QQ 的价值信息
-                  有价值 → 推一条汇总
-                  无价值 → 丢弃
+    keyword: 群消息 → 群在监控列表？→ 关键词命中 → (LLM确认?) → 立即推送
+    window:  群消息 → 群在监控列表？→ 攒入缓冲 → flush(X分钟) → LLM 总结 → 推送
 """
 
 import asyncio
@@ -37,6 +33,45 @@ from ...infrastructure.analysis.utils.llm_utils import (
 from ...infrastructure.config.config_manager import ConfigManager
 from ...infrastructure.platform.bot_manager import BotManager
 from ...utils.logger import logger
+
+# ============================================================
+# 关键词即时模式：内置正则规则
+# ============================================================
+
+# (pattern, category, description)
+BUILTIN_PATTERNS: list[tuple[re.Pattern, str, str]] = [
+    # ── API key / Token 类 ──
+    (re.compile(r"sk-[A-Za-z0-9_-]{20,}"), "API Key", "疑似 OpenAI Key"),
+    (re.compile(r"AIza[A-Za-z0-9_-]{35}"), "API Key", "疑似 Google API Key"),
+    (re.compile(r"gh[pousr]_[A-Za-z0-9]{36,}"), "API Key", "疑似 GitHub Token"),
+    (re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}"), "API Key", "疑似 Slack Token"),
+    (re.compile(r"AKIA[A-Z0-9]{16}"), "API Key", "疑似 AWS Access Key"),
+    (re.compile(r"[A-Fa-f0-9]{32,}"), "API Key", "疑似 hex 密钥串"),
+    (re.compile(r"[A-Za-z0-9+/]{40,}={0,2}"), "API Key", "疑似 base64 密钥串"),
+    # ── 资源链接类 ──
+    (re.compile(r"https?://\S{10,}"), "资源链接", "包含网址"),
+    (re.compile(r"magnet:\?\S+", re.IGNORECASE), "资源链接", "磁力链接"),
+    (re.compile(r"(?:提取码|访问码|密码)\s*[:：]\s*\S+", re.IGNORECASE), "资源链接", "网盘提取码"),
+    (re.compile(r"(?:邀请码|邀请|邀请链接)\s*[:：]?\s*\S{4,}", re.IGNORECASE), "渠道", "邀请码"),
+]
+
+# 关键词模式：LLM 确认用的 system prompt
+_KW_LLM_SYSTEM_PROMPT = (
+    "你是一个信息价值判断助手。给你一条群聊消息，判断它是否含有"
+    "「可行动的有价值信息」（如可用 API key、可下载资源、具体商机、"
+    "一手情报、可直接照做的干货方法）。"
+    "忽略闲聊、灌水、玩梗、情绪宣泄。宁缺毋滥。"
+)
+
+_KW_LLM_USER_TEMPLATE = """请判断以下群聊消息是否含有可行动的有价值信息。
+
+发送者：{sender}（{sender_name}）
+消息内容：
+{content}
+
+返回纯 JSON（不要 markdown 代码块），格式：
+{{"useful": true/false, "reason": "一句话说明为什么有用/没用", "category": "apikey|资源|商机|情报|其他"}}
+"""
 
 # LLM system prompt
 _LLM_SYSTEM_PROMPT = (
@@ -88,10 +123,8 @@ class MessageMonitorService:
         self._stopping = False
 
     async def process(self, event: AstrMessageEvent) -> None:
-        """处理一条群消息：群在监控列表？→ 攒入该群缓冲区。
+        """处理一条群消息。根据 monitor_mode 分流到关键词即时模式或整窗汇总模式。
 
-        注意：这里不过滤发送者——所有人的消息都攒，让 LLM 有完整上下文。
-        目标 QQ 的判断放到 flush 时做（窗口里有没有目标 QQ 发言）。
         任何异常都吞掉，绝不影响 AstrBot 主流程。
         """
         try:
@@ -103,7 +136,7 @@ class MessageMonitorService:
             if not sender_id or not group_id:
                 return
 
-            # 群不在监控群列表 → 跳过（整个群都不盯）
+            # 群不在监控群列表 → 跳过（两种模式共用）
             if not self._is_monitored_group(group_id):
                 return
 
@@ -111,25 +144,168 @@ class MessageMonitorService:
             if not text or not text.strip():
                 return
 
-            sender_name = self._safe_sender_name(event, sender_id)
-            platform_id = str(event.get_platform_id() or "").strip()
-
-            # 攒入该群的缓冲区（所有人）
-            async with self._buffer_lock:
-                self._buffer.setdefault(group_id, []).append(
-                    {
-                        "text": text.strip(),
-                        "time": time.monotonic(),
-                        "sender_id": sender_id,
-                        "name": sender_name,
-                        "platform_id": platform_id,
-                    }
-                )
-
-            self._ensure_flush_task()
+            # 按模式分流
+            mode = self.config_manager.get_monitor_mode()
+            if mode == "keyword":
+                await self._process_keyword(event, sender_id, group_id, text)
+            else:
+                await self._process_window(event, sender_id, group_id, text)
 
         except Exception as e:
-            logger.error(f"[Monitor] 消息入队异常: {e}", exc_info=True)
+            logger.error(f"[Monitor] 消息处理异常: {e}", exc_info=True)
+
+    # ============================================================
+    # 关键词即时模式
+    # ============================================================
+
+    async def _process_keyword(
+        self,
+        event: AstrMessageEvent,
+        sender_id: str,
+        group_id: str,
+        text: str,
+    ) -> None:
+        """关键词即时模式：不限发送者，命中关键词/正则 → (LLM确认?) → 立即推送。"""
+        text = text.strip()
+
+        # 第一层：正则 + 自定义关键词预筛
+        hits = self._regex_scan(text)
+        if not hits:
+            return  # 绝大多数消息在这里被丢弃
+
+        sender_name = self._safe_sender_name(event, sender_id)
+        platform_id = str(event.get_platform_id() or "").strip()
+
+        # 第二层：LLM 确认（可选）
+        if self.config_manager.is_llm_confirm_enabled():
+            verdict = await self._llm_confirm_keyword(sender_id, sender_name, text)
+            if verdict is not None and not verdict.get("useful", True):
+                logger.debug(
+                    f"[Monitor-KW] {sender_id}@{group_id} 命中但 LLM 判定无用，跳过"
+                )
+                return
+        else:
+            verdict = None
+
+        # 立即推送
+        await self._push_keyword_alert(
+            sender_id=sender_id,
+            sender_name=sender_name,
+            group_id=group_id,
+            text=text,
+            hits=hits,
+            llm_verdict=verdict,
+            platform_id=platform_id,
+        )
+
+    def _regex_scan(self, text: str) -> list[tuple[str, str]]:
+        """正则 + 自定义关键词扫描。返回命中的 (category, description) 列表。"""
+        hits: list[tuple[str, str]] = []
+        for pattern, category, desc in BUILTIN_PATTERNS:
+            if pattern.search(text):
+                hits.append((category, desc))
+        for kw in self.config_manager.get_monitor_extra_keywords():
+            kw = str(kw).strip()
+            if kw and kw in text:
+                hits.append(("关键词", f"命中自定义关键词「{kw}」"))
+        return hits
+
+    async def _llm_confirm_keyword(
+        self, sender_id: str, sender_name: str, text: str
+    ) -> dict | None:
+        """关键词模式：调 LLM 判断单条消息是否有价值。不可用时返回 None（降级为命中即推）。"""
+        try:
+            prompt = _KW_LLM_USER_TEMPLATE.format(
+                sender=sender_id, sender_name=sender_name, content=text[:2000]
+            )
+            resp = await call_provider_with_retry(
+                context=self.context,
+                config_manager=self.config_manager,
+                prompt=prompt,
+                system_prompt=_KW_LLM_SYSTEM_PROMPT,
+            )
+            if resp is None:
+                return None
+            raw = extract_response_text(resp).strip()
+            return self._parse_llm_json(raw)
+        except Exception as e:
+            logger.warning(f"[Monitor-KW] LLM 确认失败，降级为命中即推: {e}")
+            return None
+
+    async def _push_keyword_alert(
+        self,
+        sender_id: str,
+        sender_name: str,
+        group_id: str,
+        text: str,
+        hits: list[tuple[str, str]],
+        llm_verdict: dict | None,
+        platform_id: str,
+    ) -> None:
+        """关键词模式：格式化并即时推送。"""
+        categories = sorted({c for c, _ in hits})
+        category_str = "/".join(categories) if categories else "未知"
+
+        if llm_verdict:
+            reason = llm_verdict.get("reason", "")
+            llm_category = llm_verdict.get("category", "")
+            if llm_category and llm_category != "其他":
+                category_str = llm_category
+        else:
+            reason = "正则/关键词命中" + (
+                "（LLM 未启用）" if not self.config_manager.is_llm_confirm_enabled() else "（LLM 降级）"
+            )
+
+        hit_details = "、".join(desc for _, desc in hits[:3])
+        content_display = text if len(text) <= 800 else text[:800] + " …(截断)"
+
+        alert = (
+            f"🚨 关键词命中预警\n"
+            f"━━━━━━━━━━━━━\n"
+            f"👤 来源：{sender_name} ({sender_id})\n"
+            f"📍 群：{group_id}\n"
+            f"🏷️ 类别：{category_str}\n"
+            f"💡 判断：{reason or hit_details}\n"
+            f"\n"
+            f"📝 原文：\n{content_display}\n"
+            f"\n"
+            f"━━━━━━━━━━━━━\n"
+            f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+
+        await self._send_alert(
+            alert,
+            context_desc=f"{sender_name}({sender_id})@{group_id}",
+            platform_id=platform_id,
+        )
+
+    # ============================================================
+    # 整窗汇总模式
+    # ============================================================
+
+    async def _process_window(
+        self,
+        event: AstrMessageEvent,
+        sender_id: str,
+        group_id: str,
+        text: str,
+    ) -> None:
+        """整窗汇总模式：不过滤发送者，所有人的消息都攒入缓冲区。"""
+        sender_name = self._safe_sender_name(event, sender_id)
+        platform_id = str(event.get_platform_id() or "").strip()
+
+        async with self._buffer_lock:
+            self._buffer.setdefault(group_id, []).append(
+                {
+                    "text": text.strip(),
+                    "time": time.monotonic(),
+                    "sender_id": sender_id,
+                    "name": sender_name,
+                    "platform_id": platform_id,
+                }
+            )
+
+        self._ensure_flush_task()
 
     # ============================================================
     # 后台 flush 任务
@@ -444,6 +620,65 @@ class MessageMonitorService:
                 result.append(q_clean)
         return result
 
+    async def _send_alert(
+        self,
+        alert: str,
+        context_desc: str = "",
+        platform_id: str = "",
+    ) -> None:
+        """公共推送方法：格式化好的 alert 文本私聊发给所有目标。
+
+        Args:
+            alert: 完整的预警文本
+            context_desc: 日志用的上下文描述（如 "张三@群A，2条有价值"）
+            platform_id: 平台 ID（用于获取 adapter）
+        """
+        targets = self._get_alert_targets()
+        if not targets:
+            logger.warning(f"[Monitor] 无推送目标（请配置 alert_admin_qqs 或 admins_id）")
+            return
+
+        adapter = self.bot_manager.get_adapter(platform_id) if platform_id else None
+        if not adapter:
+            # 兜底：遍历所有 adapter 找一个支持 send_private 的
+            for pid_attempt in self._get_all_platform_ids():
+                a = self.bot_manager.get_adapter(pid_attempt)
+                if a and hasattr(a, "send_private"):
+                    adapter = a
+                    break
+        if not adapter:
+            logger.error("[Monitor] 无法获取支持私聊的 adapter（非 OneBot?）")
+            return
+        if not hasattr(adapter, "send_private"):
+            logger.error("[Monitor] 当前平台 adapter 不支持私聊发送（非 OneBot?）")
+            return
+
+        success = 0
+        for qq in targets:
+            try:
+                ok = await adapter.send_private(user_id=qq, text=alert)
+                if ok:
+                    success += 1
+                    extra = f"（{context_desc}）" if context_desc else ""
+                    logger.info(f"[Monitor] 已推送给 {qq}{extra}")
+                else:
+                    logger.warning(f"[Monitor] 推送 {qq} 失败（可能是非好友）")
+            except Exception as e:
+                logger.error(f"[Monitor] 推送 {qq} 异常: {e}")
+
+        logger.info(f"[Monitor] 推送完成：成功 {success}/{len(targets)}")
+
+    def _get_all_platform_ids(self) -> list[str]:
+        """获取所有已注册的平台 ID（兜底用）。"""
+        try:
+            # bot_manager 通常有 get_all_platforms 或类似方法
+            if hasattr(self.bot_manager, "get_all_platforms"):
+                platforms = self.bot_manager.get_all_platforms()
+                return [str(p) for p in platforms]
+        except Exception:
+            pass
+        return []
+
     async def _push_summary(
         self,
         target_qq: str,
@@ -501,31 +736,10 @@ class MessageMonitorService:
             )
             return
 
-        adapter = self.bot_manager.get_adapter(platform_id)
-        if not adapter:
-            logger.error(f"[Monitor] 无法获取 adapter (platform_id={platform_id})")
-            return
-        if not hasattr(adapter, "send_private"):
-            logger.error("[Monitor] 当前平台 adapter 不支持私聊发送（非 OneBot?）")
-            return
-
-        success = 0
-        for qq in targets:
-            try:
-                ok = await adapter.send_private(user_id=qq, text=alert)
-                if ok:
-                    success += 1
-                    logger.info(
-                        f"[Monitor] 已推送汇总给 {qq}"
-                        f"（{target_name}@{group_id}，{valuable_count}条有价值）"
-                    )
-                else:
-                    logger.warning(f"[Monitor] 推送 {qq} 失败（可能是非好友）")
-            except Exception as e:
-                logger.error(f"[Monitor] 推送 {qq} 异常: {e}")
-
-        logger.info(
-            f"[Monitor] 汇总推送完成：成功 {success}/{len(targets)}"
+        await self._send_alert(
+            alert,
+            context_desc=f"{target_name}@{group_id}，{valuable_count}条有价值",
+            platform_id=platform_id,
         )
 
     # ============================================================

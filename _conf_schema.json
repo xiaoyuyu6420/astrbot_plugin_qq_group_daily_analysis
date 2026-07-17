@@ -24,19 +24,29 @@
   "message_monitor": {
     "description": "实时消息监控（盯人预警·整窗汇总）",
     "type": "object",
-    "hint": "实时监听监控群里的【所有人】发言，每 X 分钟攒一个完整对话窗口，让 LLM 在完整上下文里提取目标 QQ 的有价值信息，推一条汇总给你。整窗模式：群聊是多人的对话，只看一个人的话容易语义歧义，攒完整上下文才能准确判断价值。需要 bot 与推送目标 QQ 互为好友。",
+    "hint": "实时监听监控群的消息，发现有价值信息立即/定时推给你。两种模式可选：keyword（关键词即时——任何人发命中关键词的消息立刻推，适合盯全群），window（整窗汇总——攒 X 分钟让 LLM 在完整上下文里提取目标 QQ 价值信息，适合盯特定人）。需要 bot 与推送目标 QQ 互为好友。",
     "items": {
       "enable_monitor": {
         "type": "bool",
         "default": false,
         "description": "开启实时消息监控",
-        "hint": "开启后，下面配置的 QQ 在群里发消息会被实时攒入缓冲区，每隔 flush_interval 分钟批量总结一次。关闭=不盯任何人。"
+        "hint": "开启后，按 monitor_mode 选择的模式工作。关闭=不盯。"
+      },
+      "monitor_mode": {
+        "type": "string",
+        "description": "监控模式",
+        "options": [
+          "keyword",
+          "window"
+        ],
+        "default": "window",
+        "hint": "keyword=关键词即时：任何人发的消息命中关键词/正则就立即推送（快，适合盯全群的关键词如 API key/资源）。window=整窗汇总：攒 X 分钟的消息让 LLM 在完整上下文里提取目标 QQ 价值信息（准，适合盯特定人）。"
       },
       "monitored_qqs": {
         "type": "list",
         "description": "要盯的 QQ 号",
         "default": [],
-        "hint": "要盯的 QQ 号（纯数字）。这些人的发言会被 LLM 重点提取。群里的其他人消息作为上下文，帮助判断目标发言的价值。",
+        "hint": "要盯的 QQ 号（纯数字）。window 模式必填——LLM 重点提取这些人的发言。keyword 模式下可选——填了则只检测这些人的消息，空=检测群里所有人。",
         "items": {
           "type": "string"
         }
@@ -54,7 +64,7 @@
         "type": "list",
         "description": "自定义关键词",
         "default": [],
-        "hint": "除了内置规则（API key/链接/提取码等），额外想盯的关键词。例如 [\"破解\", \"激活码\", \"资源\", \"分享\"]。",
+        "hint": "自定义关键词列表。keyword 模式下任何人发的消息命中这些词就推送；window 模式下会提示 LLM 特别关注。例如 [\"破解\", \"激活码\", \"资源\"]。",
         "items": {
           "type": "string"
         }
@@ -63,19 +73,19 @@
         "type": "bool",
         "default": true,
         "description": "用 LLM 二次确认",
-        "hint": "每个批次用 LLM 提取有价值信息（推荐）。关闭=批次到了直接推原始消息（省钱但噪音多）。LLM 不可用时自动降级为此模式。"
+        "hint": "keyword 模式：命中关键词后用 LLM 二次确认是否真有用（减少误推）。window 模式：每个批次用 LLM 提取有价值信息。关闭=省 token 但噪音多。LLM 不可用时自动降级。"
       },
       "flush_interval": {
         "type": "int",
         "default": 10,
         "description": "汇总间隔（分钟）",
-        "hint": "每隔多少分钟把积攒的消息批量总结推送一次。太短=推送频繁/费 token；太长=信息不够及时。建议 5~30，默认 10。"
+        "hint": "【仅 window 模式】每隔多少分钟把积攒的消息批量总结推送一次。建议 5~30，默认 10。"
       },
       "max_context_messages": {
         "type": "int",
         "default": 50,
         "description": "对话窗口最大条数",
-        "hint": "送给 LLM 的对话上下文最多多少条。超出时只保留目标 QQ 发言附近的上下文。太小=上下文不足易歧义；太大=费 token。建议 30~100，默认 50。"
+        "hint": "【仅 window 模式】送给 LLM 的对话上下文最多多少条。超出时以目标 QQ 为中心截断。默认 50。"
       },
       "alert_admin_qqs": {
         "type": "list",

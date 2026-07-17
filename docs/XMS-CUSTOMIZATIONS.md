@@ -21,6 +21,7 @@
 | 7 | 单群情报场景默认值 | `_conf_schema.json`, `config_manager.py` | 默认更贴近「私聊 + 单群」 |
 | 8 | 私聊推送可靠性（图片失败回退文本） | `dispatcher.py` | 及时送达 |
 | 9 | **实时消息监控（盯人预警）** | `message_monitor_service.py`(新), `main.py`, `config_manager.py`, `_conf_schema.json` | +~300 行 |
+| 10 | **关键词即时推送模式** | `message_monitor_service.py`, `config_manager.py`, `_conf_schema.json` | +~150 行 |
 
 ---
 
@@ -182,6 +183,40 @@ AstrBot 对已安装插件会保留现有配置文件；schema 默认值只在**
 | 不存库 | 推完即弃，不建表不依赖 |
 | 群里无痕 | 不回复、不表态，只私聊推给你 |
 | 独立链路 | 与定时日报、Telegram 拦截器完全独立 |
+
+### 定制点 10：关键词即时推送模式
+
+**问题**：整窗汇总模式是「攒 X 分钟再总结」，但有些信息要秒级响应——群里有人丢了个 API key，你希望立刻收到，不想等 10 分钟。
+
+**新增模式**：`monitor_mode = keyword`
+
+```
+群消息（任何人）→ 群在监控列表？→ 关键词/正则命中？
+                                        │
+                                   否 → 丢弃
+                                   是 → (LLM 确认? 可选) → 立即推送
+```
+
+**与整窗模式的区别**：
+
+| | keyword 模式 | window 模式 |
+|---|---|---|
+| 触发方式 | 命中关键词立即推 | 攒 X 分钟批量总结 |
+| 检测对象 | 任何人（不限 QQ） | 特定 QQ（需上下文消歧） |
+| 速度 | 秒级 | 分钟级 |
+| token 消耗 | 低（可选 LLM） | 中（每批一次 LLM） |
+| 适合 | 盯全群关键词（API key/资源） | 盯特定人发言价值 |
+| 用到哪些配置 | extra_keywords + 内置正则 | monitored_qqs + flush_interval + max_context_messages |
+
+**内置正则规则**（keyword 模式自动检测）：
+- API key：OpenAI (`sk-`)、Google (`AIza`)、GitHub (`ghp_`)、Slack (`xox`)、AWS (`AKIA`)、长 hex/base64 串
+- 资源：网址、磁力链、网盘提取码
+- 渠道：邀请码
+- 外加你的 `extra_keywords`
+
+**LLM 可选**：`use_llm_confirm` 开时，命中后 LLM 二次确认是否真有用（减少误推）；关时纯规则即时推（零成本）。LLM 不可用自动降级为命中即推。
+
+**配置方式**：把 `monitor_mode` 改成 `keyword`，填 `monitored_groups` 和 `extra_keywords` 即可。`monitored_qqs` 在 keyword 模式下可不填（检测所有人）。
 
 ---
 

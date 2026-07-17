@@ -581,6 +581,13 @@ class ConfigManager:
         """是否开启实时消息监控（盯人预警）"""
         return bool(self._get_group("message_monitor").get("enable_monitor", False))
 
+    def get_monitor_mode(self) -> str:
+        """监控模式：keyword（关键词即时）或 window（整窗汇总，默认）"""
+        mode = str(self._get_group("message_monitor").get("monitor_mode", "window")).strip().lower()
+        if mode not in ("keyword", "window"):
+            mode = "window"
+        return mode
+
     def get_monitored_qqs(self) -> list[str]:
         """要监控的 QQ 号列表"""
         raw = self._get_group("message_monitor").get("monitored_qqs", [])

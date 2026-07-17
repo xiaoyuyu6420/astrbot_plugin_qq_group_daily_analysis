@@ -30,7 +30,7 @@ jobs:
 
       - name: Run integration tests
         run: |
-          python -m pytest tests/test_monitor_e2e.py -v --asyncio-mode=auto --tb=short
+          python -m pytest tests/test_monitor_e2e.py tests/test_monitor_keyword_e2e.py -v --asyncio-mode=auto --tb=short
 
   # ── 半真 e2e：真实 astrbot，验证 filter 注册 + 拦截匹配 ──
   real-e2e-test:
