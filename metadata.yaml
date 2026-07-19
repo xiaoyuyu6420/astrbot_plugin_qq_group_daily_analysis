@@ -1,12 +1,12 @@
 name: astrbot_plugin_qq_group_daily_analysis # 这是你的插件的唯一识别名。
 display_name: 世健世健你的好友 # 插件的显示名称
 desc: "定制版：从群聊挖掘有价值信息（话题/信息差/商机/干货），支持关键词即时推送 + 整窗汇总 + 定时日报私聊管理员。保留图片/文本/HTML 输出与 prompt 自定义；已移除用户称号/MBTI、聊天质量锐评等娱乐功能。"  # 插件简短描述
-version: v4.10.8-xms # 插件版本号。格式：v1.1.1 或者 v1.1
-author: SXP-Simon (xms 定制) # 作者
+version: v4.11.0-xms # 插件版本号。格式：v1.1.1 或者 v1.1
+author: SXP-Simon (xms 定制 by xiaoyuyu6420) # 作者
 astrbot_version: ">=4.16.0"
 support_platforms: 
   - aiocqhttp
   - discord
   - telegram
   - lark
-repo: https://github.com/SXP-Simon/astrbot_plugin_qq_group_daily_analysis # 插件的仓库地址
+repo: https://github.com/xiaoyuyu6420/astrbot_plugin_qq_group_daily_analysis # 插件的仓库地址
