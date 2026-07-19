@@ -8,6 +8,7 @@ from typing import Any
 from ...shared.constants import PLUGIN_NAME
 from ...shared.trace_context import TraceContext
 from ...utils.logger import logger
+from ..utils.admin_resolver import resolve_admin_qqs
 
 
 class ReportDispatcher:
@@ -223,36 +224,10 @@ class ReportDispatcher:
 
     def _get_admin_qqs(self) -> list[str]:
         """合并 AstrBot 超级管理员 + 插件配置的额外管理员 QQ，过滤掉非数字项"""
-        qqs: list[str] = []
-
-        # 1. 从 AstrBot 全局配置读超级管理员 admins_id
-        try:
-            bot_manager = self.message_sender.bot_manager
-            context = getattr(bot_manager, "_context", None)
-            if context is not None:
-                get_config = getattr(context, "get_config", None)
-                if callable(get_config):
-                    global_config = get_config()
-                    admins_id = global_config.get("admins_id", []) if isinstance(
-                        global_config, dict
-                    ) else []
-                    if isinstance(admins_id, list):
-                        qqs.extend(str(x) for x in admins_id)
-        except Exception as e:
-            logger.warning(f"读取 AstrBot 超管配置失败: {e}")
-
-        # 2. 合并插件配置的额外管理员 QQ
-        qqs.extend(self.config_manager.get_extra_admin_qqs())
-
-        # 3. 过滤：只保留纯数字（QQ 号），去重，排除默认占位 "astrbot"
-        seen = set()
-        result = []
-        for q in qqs:
-            q_clean = str(q).strip()
-            if q_clean.isdigit() and q_clean not in seen:
-                seen.add(q_clean)
-                result.append(q_clean)
-        return result
+        return resolve_admin_qqs(
+            self.message_sender.bot_manager,
+            self.config_manager.get_extra_admin_qqs(),
+        )
 
     async def _dispatch_to_admins(
         self,

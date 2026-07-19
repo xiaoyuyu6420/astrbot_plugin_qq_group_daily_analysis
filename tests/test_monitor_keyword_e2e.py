@@ -216,21 +216,19 @@ async def test_keyword_llm_unavailable_fallback():
 
 @pytest.mark.asyncio
 async def test_keyword_filter_by_qq():
-    """关键词模式 + monitored_qqs 非空 → 只检测这些人的消息"""
+    """关键词模式 + monitored_qqs 非空 → 只检测这些人的消息（与 schema 描述一致）"""
     cfg = make_keyword_config(monitored_qqs=["999"])
     adapter = FakeAdapter()
     svc = MessageMonitorService(MagicMock(), cfg, FakeBotManager(adapter))
 
-    # 当前 _process_keyword 没有按 monitored_qqs 过滤——这个测试验证行为
-    # 关键词模式的设计：monitored_qqs 为空=检测所有人；非空=只检测这些人
-    # 但 _regex_scan 不按 sender 过滤。这里先验证当前实际行为
-    # 非目标 QQ 发的 API key
+    # 非目标 QQ 发的 API key → 被 monitored_qqs 过滤掉，不推送
     await svc.process(FakeEvent("12345", "groupA", "sk-abcd1234efgh5678ijkl9012mnop3456", "路人"))
+    assert len(adapter.sent_messages) == 0
 
-    # 当前实现：关键词模式不限人（monitored_qqs 只在 window 模式生效）
-    # 所以这条会被推送
+    # 目标 QQ 发同样内容 → 推送
+    await svc.process(FakeEvent("999", "groupA", "sk-abcd1234efgh5678ijkl9012mnop3456", "目标"))
     assert len(adapter.sent_messages) == 1
-    print("✓ 关键词模式：不限发送者（monitored_qqs 在 window 模式才生效）")
+    print("✓ 关键词模式：monitored_qqs 非空时只检测目标 QQ 的消息")
     svc.stop()
 
 

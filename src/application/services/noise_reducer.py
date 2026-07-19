@@ -11,6 +11,7 @@
 
 import asyncio
 import hashlib
+import re
 import time
 from datetime import datetime
 
@@ -166,10 +167,8 @@ class NoiseReducer:
     def _fingerprint(text: str) -> str:
         """内容指纹：归一化后取 sha256 前 32 字符。"""
         # 归一化：去空白、转小写、去标点
-        import re as _re
-
-        normalized = _re.sub(r"\s+", "", text).lower()
-        normalized = _re.sub(r"[^\w]", "", normalized)
+        normalized = re.sub(r"\s+", "", text).lower()
+        normalized = re.sub(r"[^\w]", "", normalized)
         return hashlib.sha256(normalized.encode("utf-8", errors="ignore")).hexdigest()[
             :32
         ]
@@ -197,7 +196,7 @@ class NoiseReducer:
         alert_data["enqueued_at"] = time.monotonic()
         async with self._pending_lock:
             self._pending_normal.append(alert_data)
-        self._ensure_batch_task()
+        self.ensure_batch_task()
 
         batch_sec = self._config.get_keyword_batch_seconds()
         logger.debug(
@@ -205,7 +204,7 @@ class NoiseReducer:
             f"批量间隔 {batch_sec}s"
         )
 
-    def _ensure_batch_task(self) -> None:
+    def ensure_batch_task(self) -> None:
         """确保批量推送后台任务在运行。"""
         if self._stopping:
             return
@@ -330,7 +329,7 @@ class NoiseReducer:
         """启动后台任务（如果 keyword_batch_seconds > 0 且 keyword 模式启用）。"""
         batch_sec = self._config.get_keyword_batch_seconds()
         if batch_sec > 0:
-            self._ensure_batch_task()
+            self.ensure_batch_task()
 
     def stop(self) -> None:
         """停止后台任务。"""

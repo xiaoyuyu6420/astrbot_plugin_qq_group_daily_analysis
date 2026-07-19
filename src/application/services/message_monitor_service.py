@@ -43,6 +43,7 @@ from ...infrastructure.analysis.utils.llm_utils import (
 )
 from ...infrastructure.config.config_manager import ConfigManager
 from ...infrastructure.platform.bot_manager import BotManager
+from ...infrastructure.utils.admin_resolver import resolve_admin_qqs
 from ...utils.logger import logger
 from .noise_reducer import NoiseReducer
 
@@ -217,6 +218,12 @@ class MessageMonitorService:
         5. critical → 立即推 / normal → 批量合并 / low → 丢弃
         """
         text = text.strip()
+
+        # 第零层：发送者过滤
+        # 配了 monitored_qqs 时，keyword 模式只检测这些人的消息（与 schema 描述一致）
+        watched_qqs = set(self.config_manager.get_monitored_qqs())
+        if watched_qqs and sender_id not in watched_qqs:
+            return
 
         # 第一层：正则 + 自定义关键词预筛
         hits = self._regex_scan(text)
@@ -426,7 +433,7 @@ class MessageMonitorService:
         if self.config_manager.get_monitor_mode() == "keyword":
             batch_sec = self.config_manager.get_keyword_batch_seconds()
             if batch_sec > 0:
-                self._noise_reducer._ensure_batch_task()
+                self._noise_reducer.ensure_batch_task()
 
     async def _flush_loop(self) -> None:
         """每 flush_interval 分钟醒来一次，逐群批量总结推送。"""
@@ -718,32 +725,10 @@ class MessageMonitorService:
         return self._get_admin_qqs_fallback()
 
     def _get_admin_qqs_fallback(self) -> list[str]:
-        qqs: list[str] = []
-        try:
-            context = getattr(self.bot_manager, "_context", None)
-            if context is not None:
-                get_config = getattr(context, "get_config", None)
-                if callable(get_config):
-                    global_config = get_config()
-                    admins_id = (
-                        global_config.get("admins_id", [])
-                        if isinstance(global_config, dict)
-                        else []
-                    )
-                    if isinstance(admins_id, list):
-                        qqs.extend(str(x) for x in admins_id)
-        except Exception as e:
-            logger.warning(f"[Monitor] 读取 AstrBot 超管配置失败: {e}")
-        qqs.extend(self.config_manager.get_extra_admin_qqs())
-
-        seen: set[str] = set()
-        result: list[str] = []
-        for q in qqs:
-            q_clean = str(q).strip()
-            if q_clean.isdigit() and q_clean not in seen:
-                seen.add(q_clean)
-                result.append(q_clean)
-        return result
+        return resolve_admin_qqs(
+            self.bot_manager,
+            self.config_manager.get_extra_admin_qqs(),
+        )
 
     async def _send_alert(
         self,
@@ -936,11 +921,11 @@ class MessageMonitorService:
         # 3. 去重检查（跨群聚合级别：同一内容指纹不重复处理）
         #    这里不做消息级去重，交给 LLM 聚类时自然合并
 
-        # 4. 截断
+        # 4. 截断（与单群一致：以目标 QQ 发言为中心，向前向后扩展覆盖上下文）
         max_ctx = self.config_manager.get_max_context_messages()
-        total = len(all_messages)
-        if total > max_ctx:
-            all_messages = all_messages[-max_ctx:]
+        all_messages, total = self._truncate_window(
+            all_messages, watched_qqs, max_ctx
+        )
         shown = len(all_messages)
 
         # 5. LLM 跨群聚类提取

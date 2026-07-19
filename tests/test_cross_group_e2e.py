@@ -310,6 +310,7 @@ async def test_keyword_critical_bypass_cooldown():
     """keyword 模式：critical 优先级绕过冷却"""
     cfg = make_config(
         monitor_mode="keyword",
+        monitored_qqs=[],  # keyword 模式不限发送者（聚焦冷却行为）
         cooldown_seconds=300,  # 5 分钟冷却
         use_llm_confirm=False,  # 不用 LLM，直接推
         keyword_batch_seconds=0,  # 不批量合并
@@ -336,6 +337,7 @@ async def test_keyword_normal_respects_cooldown():
     """keyword 模式：normal 优先级受冷却限制"""
     cfg = make_config(
         monitor_mode="keyword",
+        monitored_qqs=[],  # keyword 模式不限发送者（聚焦冷却行为）
         cooldown_seconds=300,  # 5 分钟冷却
         use_llm_confirm=False,
         keyword_batch_seconds=0,  # 不批量合并
@@ -364,6 +366,7 @@ async def test_keyword_dedup():
     """keyword 模式：内容去重"""
     cfg = make_config(
         monitor_mode="keyword",
+        monitored_qqs=[],  # keyword 模式不限发送者（聚焦去重行为）
         cooldown_seconds=0,  # 不冷却
         dedup_minutes=30,
         use_llm_confirm=False,
@@ -426,6 +429,7 @@ async def test_keyword_normal_batch():
     """keyword 模式：normal 优先级进入批量合并队列"""
     cfg = make_config(
         monitor_mode="keyword",
+        monitored_qqs=[],  # keyword 模式不限发送者（聚焦批量合并行为）
         use_llm_confirm=False,
         cooldown_seconds=0,
         dedup_minutes=0,

@@ -315,7 +315,7 @@ class TestLifecycle:
         """stop 取消批量合并任务"""
         nr = NoiseReducer(make_config(keyword_batch_seconds=60))
         # 在 async 上下文中启动批量任务
-        nr._ensure_batch_task()
+        nr.ensure_batch_task()
         assert nr._batch_task is not None
         nr.stop()
         # 取消后 task.done() 应为 True 或 _stopping 为 True
