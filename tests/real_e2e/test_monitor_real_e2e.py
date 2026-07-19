@@ -199,6 +199,15 @@ class TestHandlerDispatchE2E:
         cfg.is_llm_confirm_enabled.return_value = False
         cfg.get_monitor_extra_keywords.return_value = []
         cfg.get_alert_admin_qqs.return_value = ["888"]
+        # NoiseReducer 依赖的 config 方法
+        cfg.get_cooldown_seconds.return_value = 60
+        cfg.get_dedup_minutes.return_value = 30
+        cfg.get_keyword_batch_seconds.return_value = 60
+        # MonitorService 其他路径依赖
+        # 使用 window 模式（默认）：消息进 buffer，flush 时推送
+        cfg.get_monitor_mode.return_value = "window"
+        cfg.is_cross_group_enabled.return_value = False
+        cfg.get_extra_admin_qqs.return_value = []
 
         fake_adapter = MagicMock()
         fake_adapter.send_private = AsyncMock(return_value=True)
