@@ -638,6 +638,36 @@ class ConfigManager:
             raw = [raw]
         return [str(x).strip() for x in raw if str(x).strip()]
 
+    def is_cross_group_enabled(self) -> bool:
+        """是否开启跨群聚合简报（window 模式下合并多群输出）。"""
+        return bool(self._get_group("message_monitor").get("enable_cross_group", False))
+
+    def get_cooldown_seconds(self) -> int:
+        """keyword 模式推送冷却间隔（秒）。同一发送者@同一群在此期间不重复推送。0=不冷却。"""
+        try:
+            val = int(self._get_group("message_monitor").get("cooldown_seconds", 60))
+            return max(0, val)
+        except (TypeError, ValueError):
+            return 60
+
+    def get_dedup_minutes(self) -> int:
+        """内容去重窗口（分钟）。内容相似的消息在此窗口内只推一次。0=不去重。"""
+        try:
+            val = int(self._get_group("message_monitor").get("dedup_minutes", 30))
+            return max(0, val)
+        except (TypeError, ValueError):
+            return 30
+
+    def get_keyword_batch_seconds(self) -> int:
+        """keyword 模式 normal 优先级批量合并间隔（秒）。0=不合并（立即推）。"""
+        try:
+            val = int(
+                self._get_group("message_monitor").get("keyword_batch_seconds", 60)
+            )
+            return max(0, val)
+        except (TypeError, ValueError):
+            return 60
+
     def set_scheduled_group_list(self, groups: list[str]):
         """设置定时分析目标群列表"""
         self._ensure_group("auto_analysis")["scheduled_group_list"] = groups

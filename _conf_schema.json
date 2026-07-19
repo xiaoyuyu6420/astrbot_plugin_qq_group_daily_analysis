@@ -95,6 +95,30 @@
         "items": {
           "type": "string"
         }
+      },
+      "enable_cross_group": {
+        "type": "bool",
+        "default": false,
+        "description": "跨群聚合简报",
+        "hint": "【仅 window 模式】开启后，flush 时合并所有监控群的消息，让 LLM 按话题聚类，输出一份跨群简报（去重、标注来源群、合并重复话题）。关闭=每群独立推送。"
+      },
+      "cooldown_seconds": {
+        "type": "int",
+        "default": 60,
+        "description": "推送冷却（秒）",
+        "hint": "【仅 keyword 模式】同一发送者@同一群的最小推送间隔，防刷屏。0=不冷却。API Key 等关键命中不受此限制。默认 60。"
+      },
+      "dedup_minutes": {
+        "type": "int",
+        "default": 30,
+        "description": "内容去重窗口（分钟）",
+        "hint": "内容相似的消息在 N 分钟内只推一次，防跨群重复轰炸。0=不去重。默认 30。"
+      },
+      "keyword_batch_seconds": {
+        "type": "int",
+        "default": 60,
+        "description": "关键词批量合并间隔（秒）",
+        "hint": "【仅 keyword 模式】normal 优先级（资源链接、自定义关键词等）的命中不立即推，攒 N 秒合并成一条推送。0=不合并（立即推）。API Key 等关键命中不受此限制。默认 60。"
       }
     }
   },

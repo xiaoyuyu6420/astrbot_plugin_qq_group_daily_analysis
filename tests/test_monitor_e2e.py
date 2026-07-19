@@ -37,6 +37,10 @@ def make_config(**overrides) -> ConfigManager:
             "flush_interval": 1,  # 1 分钟（测试用短间隔）
             "max_context_messages": 50,
             "alert_admin_qqs": ["888"],
+            # 降噪参数
+            "cooldown_seconds": 0,
+            "dedup_minutes": 0,
+            "keyword_batch_seconds": 0,
         }
     }
     for key, val in overrides.items():

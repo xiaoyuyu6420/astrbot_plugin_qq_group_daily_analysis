@@ -1,20 +1,31 @@
 """
-实时消息监控服务（定制版：盯人预警）
+实时消息监控服务（定制版：盯人预警 + 跨群聚合 + 智能降噪）
 
 两种工作模式，由 message_monitor.monitor_mode 选择：
 
 1. keyword（关键词即时模式）：
-   不限发送者，监控群里【任何人】的消息命中关键词/正则 → 立即推送。
+   不限发送者，监控群里【任何人】的消息命中关键词/正则 → 降噪 → 推送。
    可选用 LLM 二次确认（关掉就是纯规则即时推）。
    适合：盯全群的关键词（API key、资源、特定词），要快。
 
 2. window（整窗汇总模式，默认）：
    攒群里所有人的消息 X 分钟，LLM 在完整上下文里提取目标 QQ 的价值信息。
+   可开启跨群聚合，输出统一简报。
    适合：盯特定 QQ，需要上下文消歧。
 
+降噪层（横切两个模式）：
+    优先级分级：critical(立即) / normal(批量合并) / low(只进简报)
+    冷却：同一发送者@同一群在冷却期内不重复推送
+    去重：内容指纹在去重窗口内只推一次
+    keyword 批量合并：normal 优先级攒 N 秒合并推送
+
+跨群聚合（window 模式可选）：
+    enable_cross_group=true 时，flush 合并所有监控群消息 → LLM 按话题聚类 → 统一简报
+    enable_cross_group=false 时，逐群独立推送（原行为）
+
 架构（不侵入定时日报链路）：
-    keyword: 群消息 → 群在监控列表？→ 关键词命中 → (LLM确认?) → 立即推送
-    window:  群消息 → 群在监控列表？→ 攒入缓冲 → flush(X分钟) → LLM 总结 → 推送
+    keyword: 命中 → 优先级分级 → 冷却/去重 → critical立即 / normal批量 / low丢弃
+    window:  攒消息 → flush → 跨群聚合(可选) → 统一简报 / 逐群汇总
 """
 
 import asyncio
@@ -33,6 +44,7 @@ from ...infrastructure.analysis.utils.llm_utils import (
 from ...infrastructure.config.config_manager import ConfigManager
 from ...infrastructure.platform.bot_manager import BotManager
 from ...utils.logger import logger
+from .noise_reducer import NoiseReducer
 
 # ============================================================
 # 关键词即时模式：内置正则规则
@@ -101,6 +113,32 @@ _LLM_USER_TEMPLATE = """以下是群 {group} 在过去约 {minutes} 分钟内的
 _MAX_LLM_TEXT_CHARS = 4000
 _MAX_CONTENT_DISPLAY = 500
 
+# ============================================================
+# 跨群聚合模式：LLM prompt
+# ============================================================
+
+_CROSS_GROUP_SYSTEM_PROMPT = (
+    "你是一个跨群信息聚合助手。给你多个群在同一时间段内的聊天记录，"
+    "请按「话题」聚类提取所有有价值信息，合并不同群中的相同话题，"
+    "标注每个话题涉及的来源群。"
+    "聚焦「可行动的有价值信息」（API key、资源、商机、情报、干货方法）。"
+    "忽略闲聊灌水。如果确实没有有价值信息，返回 has_value=false。"
+)
+
+_CROSS_GROUP_USER_TEMPLATE = """以下是 {group_count} 个群在过去约 {minutes} 分钟内的聊天记录（共 {total} 条）。
+每条消息标注了 [群号]。
+
+{keywords_hint}
+
+聊天记录：
+{messages_text}
+
+---
+
+请按话题聚类提取有价值信息。返回纯 JSON（不要 markdown 代码块）：
+{{"has_value": true/false, "topics": [{{"topic": "话题名", "groups": ["群号列表"], "items": [{{"content": "原文", "source_qq": "发言者QQ", "category": "apikey|资源|商机|情报|其他", "reason": "为什么有价值"}}], "summary": "一句话概括"}}], "overall_summary": "跨群整体概述"}}
+"""
+
 
 class MessageMonitorService:
     """实时消息监控：整窗攒 X 分钟 → LLM 在完整上下文里提取目标 QQ 价值信息 → 推一条汇总"""
@@ -121,6 +159,10 @@ class MessageMonitorService:
         self._buffer_lock = asyncio.Lock()
         self._flush_task: asyncio.Task | None = None
         self._stopping = False
+
+        # 智能降噪层
+        self._noise_reducer = NoiseReducer(config_manager)
+        self._noise_reducer.set_send_callback(self._send_alert)
 
     async def process(self, event: AstrMessageEvent) -> None:
         """处理一条群消息。根据 monitor_mode 分流到关键词即时模式或整窗汇总模式。
@@ -165,7 +207,15 @@ class MessageMonitorService:
         group_id: str,
         text: str,
     ) -> None:
-        """关键词即时模式：不限发送者，命中关键词/正则 → (LLM确认?) → 立即推送。"""
+        """关键词即时模式：不限发送者，命中关键词/正则 → 降噪 → 推送。
+
+        降噪流程：
+        1. 正则预筛
+        2. LLM 确认（可选）
+        3. 优先级分级（critical/normal/low）
+        4. 冷却/去重检查
+        5. critical → 立即推 / normal → 批量合并 / low → 丢弃
+        """
         text = text.strip()
 
         # 第一层：正则 + 自定义关键词预筛
@@ -177,6 +227,7 @@ class MessageMonitorService:
         platform_id = str(event.get_platform_id() or "").strip()
 
         # 第二层：LLM 确认（可选）
+        verdict = None
         if self.config_manager.is_llm_confirm_enabled():
             verdict = await self._llm_confirm_keyword(sender_id, sender_name, text)
             if verdict is not None and not verdict.get("useful", True):
@@ -184,19 +235,74 @@ class MessageMonitorService:
                     f"[Monitor-KW] {sender_id}@{group_id} 命中但 LLM 判定无用，跳过"
                 )
                 return
-        else:
-            verdict = None
 
-        # 立即推送
-        await self._push_keyword_alert(
-            sender_id=sender_id,
-            sender_name=sender_name,
-            group_id=group_id,
-            text=text,
-            hits=hits,
-            llm_verdict=verdict,
-            platform_id=platform_id,
+        # 第三层：优先级分级
+        priority = self._noise_reducer.classify_priority(hits, verdict)
+        logger.debug(
+            f"[Monitor-KW] {sender_id}@{group_id} 命中，优先级={priority}"
         )
+
+        if priority == NoiseReducer.PRIORITY_LOW:
+            # low 优先级：丢弃，等 window 简报兜底
+            logger.debug(
+                f"[Monitor-KW] {sender_id}@{group_id} 低优先级，丢弃"
+            )
+            return
+
+        # 第四层：冷却/去重检查（critical 豁免冷却）
+        if priority != NoiseReducer.PRIORITY_CRITICAL:
+            if self._noise_reducer.check_cooldown(sender_id, group_id):
+                logger.debug(
+                    f"[Monitor-KW] {sender_id}@{group_id} 冷却中，跳过"
+                )
+                return
+
+        if self._noise_reducer.check_dedup(text):
+            logger.debug(
+                f"[Monitor-KW] {sender_id}@{group_id} 内容去重命中，跳过"
+            )
+            return
+
+        # 第五层：按优先级分流
+        batch_sec = self.config_manager.get_keyword_batch_seconds()
+        if priority == NoiseReducer.PRIORITY_CRITICAL:
+            # critical → 立即推送
+            await self._push_keyword_alert(
+                sender_id=sender_id,
+                sender_name=sender_name,
+                group_id=group_id,
+                text=text,
+                hits=hits,
+                llm_verdict=verdict,
+                platform_id=platform_id,
+            )
+            self._noise_reducer.mark_cooldown(sender_id, group_id)
+            self._noise_reducer.mark_dedup(text)
+        elif priority == NoiseReducer.PRIORITY_NORMAL:
+            if batch_sec > 0:
+                # normal + 批量合并开启 → 入队
+                await self._noise_reducer.enqueue_normal({
+                    "sender_id": sender_id,
+                    "sender_name": sender_name,
+                    "group_id": group_id,
+                    "text": text,
+                    "hits": hits,
+                    "llm_verdict": verdict,
+                    "platform_id": platform_id,
+                })
+            else:
+                # normal + 批量合并关闭 → 直接推
+                await self._push_keyword_alert(
+                    sender_id=sender_id,
+                    sender_name=sender_name,
+                    group_id=group_id,
+                    text=text,
+                    hits=hits,
+                    llm_verdict=verdict,
+                    platform_id=platform_id,
+                )
+                self._noise_reducer.mark_cooldown(sender_id, group_id)
+                self._noise_reducer.mark_dedup(text)
 
     def _regex_scan(self, text: str) -> list[tuple[str, str]]:
         """正则 + 自定义关键词扫描。返回命中的 (category, description) 列表。"""
@@ -316,6 +422,11 @@ class MessageMonitorService:
             return
         if self._flush_task is None or self._flush_task.done():
             self._flush_task = asyncio.create_task(self._flush_loop())
+        # 同时启动降噪层的批量合并任务
+        if self.config_manager.get_monitor_mode() == "keyword":
+            batch_sec = self.config_manager.get_keyword_batch_seconds()
+            if batch_sec > 0:
+                self._noise_reducer._ensure_batch_task()
 
     async def _flush_loop(self) -> None:
         """每 flush_interval 分钟醒来一次，逐群批量总结推送。"""
@@ -337,7 +448,12 @@ class MessageMonitorService:
                 await asyncio.sleep(30)
 
     async def _flush_all(self) -> None:
-        """快照所有群缓冲区并清空，逐群处理。"""
+        """快照所有群缓冲区并清空。
+
+        根据 enable_cross_group 配置分流：
+        - 开启跨群聚合：合并所有群缓冲 → LLM 聚类 → 统一简报
+        - 关闭（默认）：逐群独立处理
+        """
         async with self._buffer_lock:
             if not self._buffer:
                 return
@@ -347,14 +463,23 @@ class MessageMonitorService:
         if not batches:
             return
 
+        # 降噪层清理过期记录
+        self._noise_reducer.cleanup()
+
         logger.info(f"[Monitor] flush 触发：{len(batches)} 个群有待处理窗口")
-        for group_id, messages in batches.items():
-            try:
-                await self._flush_group(group_id, messages)
-            except Exception as e:
-                logger.error(
-                    f"[Monitor] flush 群 {group_id} 异常: {e}", exc_info=True
-                )
+
+        if self.config_manager.is_cross_group_enabled():
+            # 跨群聚合模式：合并所有群，输出一份简报
+            await self._flush_cross_group(batches)
+        else:
+            # 原有模式：逐群独立处理
+            for group_id, messages in batches.items():
+                try:
+                    await self._flush_group(group_id, messages)
+                except Exception as e:
+                    logger.error(
+                        f"[Monitor] flush 群 {group_id} 异常: {e}", exc_info=True
+                    )
 
     async def _flush_group(
         self, group_id: str, messages: list[dict]
@@ -774,11 +899,220 @@ class MessageMonitorService:
         return " ".join(parts).strip()
 
     # ============================================================
+    # 跨群聚合模式
+    # ============================================================
+
+    async def _flush_cross_group(self, batches: dict[str, list[dict]]) -> None:
+        """跨群聚合：合并所有群缓冲，LLM 聚类分析，输出统一简报。
+
+        Args:
+            batches: {group_id: [消息列表]}，每个群一个列表
+        """
+        watched_qqs = set(self.config_manager.get_monitored_qqs())
+
+        # 1. 合并所有群消息，标注来源群（用副本避免污染原始数据）
+        all_messages: list[dict] = []
+        platform_id = ""
+        for group_id, messages in batches.items():
+            for m in messages:
+                entry = dict(m)
+                entry["group_id"] = group_id
+                all_messages.append(entry)
+            if not platform_id and messages:
+                platform_id = messages[-1].get("platform_id", "")
+
+        if not all_messages:
+            return
+
+        # 2. 过滤：如果配了 monitored_qqs，至少有一个目标 QQ 发言
+        if watched_qqs:
+            has_target = any(
+                m.get("sender_id", "") in watched_qqs for m in all_messages
+            )
+            if not has_target:
+                logger.info("[Monitor-Cross] 跨群窗口中无目标 QQ 发言，跳过")
+                return
+
+        # 3. 去重检查（跨群聚合级别：同一内容指纹不重复处理）
+        #    这里不做消息级去重，交给 LLM 聚类时自然合并
+
+        # 4. 截断
+        max_ctx = self.config_manager.get_max_context_messages()
+        total = len(all_messages)
+        if total > max_ctx:
+            all_messages = all_messages[-max_ctx:]
+        shown = len(all_messages)
+
+        # 5. LLM 跨群聚类提取
+        dialog_text = self._build_cross_group_dialog(all_messages, watched_qqs)
+        verdict = await self._llm_cross_group_extract(
+            dialog_text, len(batches), total, shown
+        )
+
+        # 6. 决定是否推送
+        if verdict is not None:
+            if not verdict.get("has_value", False):
+                logger.info(
+                    f"[Monitor-Cross] 跨群窗口({shown}条) LLM 判定无价值，跳过"
+                )
+                return
+        else:
+            # LLM 不可用 → 降级：不做跨群聚合，回退到逐群
+            logger.warning(
+                "[Monitor-Cross] LLM 不可用，跨群聚合降级为逐群处理"
+            )
+            for group_id, messages in batches.items():
+                try:
+                    await self._flush_group(group_id, messages)
+                except Exception as e:
+                    logger.error(
+                        f"[Monitor-Cross] 降级 flush 群 {group_id} 异常: {e}",
+                        exc_info=True,
+                    )
+            return
+
+        # 7. 推送跨群简报
+        await self._push_cross_group_brief(verdict, len(batches), total, shown, platform_id)
+
+    def _build_cross_group_dialog(
+        self, messages: list[dict], watched_qqs: set[str]
+    ) -> str:
+        """构建跨群对话文本，每条消息标注来源群，目标 QQ 用 >>> 标记。"""
+        lines: list[str] = []
+        total_len = 0
+        for i, msg in enumerate(messages, 1):
+            is_target = msg.get("sender_id", "") in watched_qqs if watched_qqs else False
+            marker = ">>> " if is_target else "    "
+            group_id = msg.get("group_id", "未知")
+            line = f"{marker}[{i}] [群{group_id}] [{msg.get('sender_id', '?')}]: {msg.get('text', '')}"
+            if total_len + len(line) > _MAX_LLM_TEXT_CHARS:
+                lines.append("    …(后续已截断)")
+                break
+            lines.append(line)
+            total_len += len(line)
+        return "\n".join(lines)
+
+    async def _llm_cross_group_extract(
+        self,
+        dialog_text: str,
+        group_count: int,
+        total: int,
+        shown: int,
+    ) -> dict | None:
+        """调用 LLM 做跨群聚类提取。"""
+        try:
+            keywords = self.config_manager.get_monitor_extra_keywords()
+            keywords_hint = ""
+            if keywords:
+                keywords_hint = f"特别关注这些关键词：{', '.join(keywords)}"
+
+            minutes = self.config_manager.get_flush_interval()
+            prompt = _CROSS_GROUP_USER_TEMPLATE.format(
+                group_count=group_count,
+                minutes=minutes,
+                total=total,
+                shown=shown,
+                keywords_hint=keywords_hint,
+                messages_text=dialog_text,
+            )
+
+            resp = await call_provider_with_retry(
+                context=self.context,
+                config_manager=self.config_manager,
+                prompt=prompt,
+                system_prompt=_CROSS_GROUP_SYSTEM_PROMPT,
+            )
+            if resp is None:
+                return None
+            raw = extract_response_text(resp).strip()
+            return self._parse_llm_json(raw)
+        except Exception as e:
+            logger.warning(f"[Monitor-Cross] LLM 跨群提取失败: {e}")
+            return None
+
+    async def _push_cross_group_brief(
+        self,
+        verdict: dict,
+        group_count: int,
+        total: int,
+        shown: int,
+        platform_id: str,
+    ) -> None:
+        """格式化跨群简报并推送。"""
+        topics = verdict.get("topics", [])
+        overall_summary = verdict.get("overall_summary", "")
+        interval_min = self.config_manager.get_flush_interval()
+
+        if not topics:
+            # 兜底：用 items 格式
+            items = verdict.get("items", [])
+            if items:
+                topics = [{"topic": "有价值信息", "groups": [], "items": items, "summary": ""}]
+
+        topic_lines: list[str] = []
+        for i, topic in enumerate(topics, 1):
+            topic_name = str(topic.get("topic", f"话题{i}")).strip()
+            groups = topic.get("groups", [])
+            items = topic.get("items", [])
+            topic_summary = str(topic.get("summary", "")).strip()
+
+            # 检测是否有 critical 类别
+            has_critical = any(
+                str(item.get("category", "")).lower() in ("apikey", "api key")
+                for item in items
+            )
+            critical_marker = " 🔴" if has_critical else ""
+
+            line = f"📌 [话题 {i}] {topic_name}{critical_marker}"
+            if groups:
+                line += f"\n   涉及群：{', '.join(str(g) for g in groups)}"
+            if topic_summary:
+                line += f"\n   💡 {topic_summary}"
+            else:
+                # 从 items 中提取简短描述
+                for item in items[:2]:
+                    content = str(item.get("content", "")).strip()
+                    if len(content) > 100:
+                        content = content[:100] + "…"
+                    reason = str(item.get("reason", "")).strip()
+                    if reason:
+                        line += f"\n   💡 {reason}"
+                    elif content:
+                        line += f"\n   📝 {content}"
+            topic_lines.append(line)
+
+        topics_section = "\n\n".join(topic_lines) if topic_lines else "（未提取到有价值话题）"
+
+        valuable_count = sum(len(t.get("items", [])) for t in topics)
+
+        alert = (
+            f"🧠 跨群情报简报（近 {interval_min} 分钟）\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📊 {group_count} 个群 · {total} 条消息（送审 {shown} 条）"
+            f" · 筛出 {len(topics)} 个话题\n"
+            f"\n"
+            f"{topics_section}\n"
+        )
+        if overall_summary:
+            alert += f"\n💡 跨群概述：{overall_summary}\n"
+        alert += (
+            f"\n━━━━━━━━━━━━━━━━━━━━━\n"
+            f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+
+        await self._send_alert(
+            alert,
+            context_desc=f"跨群简报：{group_count}群，{valuable_count}条有价值",
+            platform_id=platform_id,
+        )
+
+    # ============================================================
     # 生命周期
     # ============================================================
 
     def stop(self) -> None:
         self._stopping = True
+        self._noise_reducer.stop()
         if self._flush_task and not self._flush_task.done():
             self._flush_task.cancel()
 

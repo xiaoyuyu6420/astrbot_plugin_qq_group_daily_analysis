@@ -31,6 +31,10 @@ def make_keyword_config(**overrides) -> ConfigManager:
             "flush_interval": 10,
             "max_context_messages": 50,
             "alert_admin_qqs": ["888"],
+            # 降噪参数：测试默认禁用批量合并和冷却，保证即时推送
+            "cooldown_seconds": 0,
+            "dedup_minutes": 0,
+            "keyword_batch_seconds": 0,
         }
     }
     for key, val in overrides.items():

@@ -22,6 +22,8 @@
 | 8 | 私聊推送可靠性（图片失败回退文本） | `dispatcher.py` | 及时送达 |
 | 9 | **实时消息监控（盯人预警）** | `message_monitor_service.py`(新), `main.py`, `config_manager.py`, `_conf_schema.json` | +~300 行 |
 | 10 | **关键词即时推送模式** | `message_monitor_service.py`, `config_manager.py`, `_conf_schema.json` | +~150 行 |
+| 11 | **智能降噪层** | `noise_reducer.py`(新), `message_monitor_service.py`, `config_manager.py`, `_conf_schema.json` | +~300 行 |
+| 12 | **跨群智能聚合** | `message_monitor_service.py`, `config_manager.py`, `_conf_schema.json` | +~200 行 |
 
 ---
 
@@ -218,6 +220,111 @@ AstrBot 对已安装插件会保留现有配置文件；schema 默认值只在**
 
 **配置方式**：把 `monitor_mode` 改成 `keyword`，填 `monitored_groups` 和 `extra_keywords` 即可。`monitored_qqs` 在 keyword 模式下可不填（检测所有人）。
 
+### 定制点 11：智能降噪层
+
+**问题**：关键词即时推送太吵——同一条 API key 被转发到 3 个群你收到 3 遍；有人在群里刷链接你被轰炸；低价值命中也在推。
+
+**新增文件**：`src/application/services/noise_reducer.py`（`NoiseReducer`）
+
+**降噪四件套**：
+
+| 降噪能力 | 配置项 | 默认值 | 说明 |
+|----------|--------|--------|------|
+| 优先级分级 | 内置规则 | — | API Key → critical（立即推）、资源链接/关键词 → normal（批量合并）、LLM 判定无用 → low（丢弃） |
+| 推送冷却 | `cooldown_seconds` | 60 | 同一发送者@同一群的最小推送间隔。critical 豁免 |
+| 内容去重 | `dedup_minutes` | 30 | 内容相似消息在 N 分钟内只推一次，防跨群重复轰炸 |
+| keyword 批量合并 | `keyword_batch_seconds` | 60 | normal 优先级攒 N 秒合并成一条推送。0=立即推 |
+
+**优先级分级规则**（无需用户手动配置）：
+- 命中 `API Key` 类正则 → **critical** → 立即推，不受冷却/批量限制
+- 命中 `资源链接`/`渠道`/`自定义关键词` → **normal** → 进入批量合并队列（`keyword_batch_seconds=0` 时直接推）
+- LLM 确认后判定 `useful=false` 或 `category=其他` → **low** → 丢弃（等 window 简报兜底）
+- LLM 不可用 + 正则命中 → 降级为该正则类别的默认优先级
+
+**keyword 模式降噪流程**：
+```
+命中正则 → classify_priority()
+  critical → 去重检查? → 立即推
+  normal   → keyword_batch_seconds>0? 入队 : 直接推（走冷却+去重）
+  low      → 丢弃
+```
+
+**window 模式**：降噪主要在跨群聚合时起作用——去重在缓冲阶段自然消除（同窗口不重复），冷却和批量合并不适用整窗模式。
+
+**修改文件**：
+- `message_monitor_service.py`：`_process_keyword` 接入降噪层（5 层过滤），`__init__` 实例化 `NoiseReducer`，`stop()` 清理
+- `config_manager.py`：新增 `get_cooldown_seconds` / `get_dedup_minutes` / `get_keyword_batch_seconds`
+- `_conf_schema.json`：`message_monitor` 组新增 3 项配置
+
+### 定制点 12：跨群智能聚合
+
+**问题**：window 模式按群×QQ 双重切分，3 个群 × 1 个目标 QQ = 3 条独立推送。同一事件被切碎、跨群重复信息无法合并。需要「综合多群信息做总结」。
+
+**开启方式**：`message_monitor.enable_cross_group = true`
+
+**关闭时**：window 模式逐群独立推送（原行为，每群每 QQ 一条汇总）。
+
+**开启时**：flush 合并所有监控群的消息 → LLM 按话题聚类 → 输出一份统一简报。
+
+**架构**：
+```
+_flush_all() 检测 enable_cross_group?
+  true  → _flush_cross_group(batches)
+           合并所有群消息（标注来源群）
+           → 过滤：至少一个目标 QQ 发言
+           → 截断（max_context_messages）
+           → LLM 跨群聚类提取（_CROSS_GROUP_SYSTEM_PROMPT）
+           → 输出统一简报
+  false → 逐群 _flush_group()（原行为）
+```
+
+**LLM 聚类 prompt** 返回 JSON：
+```json
+{
+  "has_value": true,
+  "topics": [
+    {
+      "topic": "话题名",
+      "groups": ["群号列表"],
+      "items": [{"content": "原文", "source_qq": "QQ", "category": "apikey|资源|商机|情报|其他", "reason": "价值"}],
+      "summary": "一句话概括"
+    }
+  ],
+  "overall_summary": "跨群整体概述"
+}
+```
+
+**简报推送格式**：
+```
+🧠 跨群情报简报（近 10 分钟）
+━━━━━━━━━━━━━━━━━━━━━
+📊 3 个群 · 127 条消息 · 筛出 4 个话题
+
+📌 [话题 1] OpenAI Key 泄露  🔴
+   涉及群：技术交流群(12345)、AI 破解圈(67890)
+   💡 张三在技术群发了 sk-xxx，李四在 AI 群确认可用
+
+📌 [话题 2] 某课程资源分享
+   涉及群：学习交流群(11111)
+   💡 含百度网盘链接+提取码
+
+━━━━━━━━━━━━━━━━━━━━━
+💡 跨群概述：3个群中检测到 API Key 泄露和资源分享
+⏰ 2026-07-19 14:30:00
+```
+
+**LLM 降级**：跨群聚合依赖 LLM 聚类。LLM 不可用时自动降级为逐群独立推送（回退到 `_flush_group`），不会丢信息。
+
+**与降噪层的联动**：
+- `_flush_all` 开头调用 `noise_reducer.cleanup()` 清理过期冷却/指纹记录
+- 跨群聚合天然解决整窗模式的跨群重复（同一段内容在多个群出现，LLM 聚类时合并为同一话题）
+- API Key 类话题自动标记 🔴
+
+**修改文件**：
+- `message_monitor_service.py`：新增 `_flush_cross_group` / `_build_cross_group_dialog` / `_llm_cross_group_extract` / `_push_cross_group_brief` 方法，新增 `_CROSS_GROUP_SYSTEM_PROMPT` / `_CROSS_GROUP_USER_TEMPLATE` 常量，`_flush_all` 加分流逻辑
+- `config_manager.py`：新增 `is_cross_group_enabled`
+- `_conf_schema.json`：`message_monitor` 组新增 `enable_cross_group` 配置项
+
 ---
 
 ## 行为矩阵
@@ -259,6 +366,23 @@ AstrBot 对已安装插件会保留现有配置文件；schema 默认值只在**
 8. **好友关系**：同上，bot QQ 与推送目标需互为好友
 
 **默认行为**：开关 `false`（需手动开）；`use_llm_confirm` = `true`；`flush_interval` = `10` 分钟；`max_context_messages` = `50`。
+
+### 启用智能降噪
+
+降噪默认已启用（配置项有默认值），如需调整：
+
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `cooldown_seconds` | 60 | 同一发送者@同一群的最小推送间隔（秒）。0=不冷却。critical 优先级豁免 |
+| `dedup_minutes` | 30 | 内容去重窗口（分钟）。内容相似消息在窗口内只推一次。0=不去重 |
+| `keyword_batch_seconds` | 60 | keyword 模式 normal 优先级批量合并间隔（秒）。0=不合并（立即推） |
+
+### 启用跨群聚合
+
+1. **开启开关**：`message_monitor.enable_cross_group` = `true`
+2. **前提**：`monitor_mode` = `window`（跨群聚合只对整窗模式有效）
+3. **效果**：flush 时合并所有监控群消息，LLM 按话题聚类输出统一简报（而非每群独立一条）
+4. **降级**：LLM 不可用时自动回退为逐群独立推送
 
 ---
 
