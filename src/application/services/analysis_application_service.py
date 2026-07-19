@@ -217,26 +217,14 @@ class AnalysisApplicationService:
                 bot_self_ids,
             )
 
-            max_user_titles = self.config_manager.get_max_user_titles()
-            top_users = self.analysis_domain_service.get_top_users(
-                user_activity, limit=max_user_titles
-            )
-
-            # 5. LLM 语义分析 (为了保持兼容，目前直接传 UnifiedMessage，后续如需传 raw dict 再加转换)
-            # LLMAnalyzer 内部可能已经处理了转换（见之前代码）
+            # 5. LLM 语义分析
             topic_enabled = self.config_manager.get_topic_analysis_enabled()
-            user_title_enabled = self.config_manager.get_user_title_analysis_enabled()
             golden_quote_enabled = (
                 self.config_manager.get_golden_quote_analysis_enabled()
             )
-            chat_quality_enabled = (
-                self.config_manager.get_chat_quality_analysis_enabled()
-            )
 
             topics = []
-            user_titles = []
             golden_quotes = []
-            chat_quality_review = None
             total_token_usage = TokenUsage()
 
             # Note: LLMAnalyzer 目前可能只接收 legacy 格式或特定的 UnifiedMessage 适配
@@ -249,29 +237,19 @@ class AnalysisApplicationService:
                 f"{platform_id}:GroupMessage:{group_id}" if platform_id else group_id
             )
 
-            if (
-                topic_enabled
-                or user_title_enabled
-                or golden_quote_enabled
-                or chat_quality_enabled
-            ):
+            if topic_enabled or golden_quote_enabled:
                 async with self.llm_semaphore:
                     logger.debug(f"[LLM] 已进入分析队列 (群: {group_id})")
                     (
                         topics,
-                        user_titles,
                         golden_quotes,
                         total_token_usage,
-                        chat_quality_review,
                     ) = await self.llm_analyzer.analyze_all_concurrent(
                         legacy_messages,
                         user_activity,
                         umo=unified_msg_origin,
-                        top_users=top_users,
                         topic_enabled=topic_enabled,
-                        user_title_enabled=user_title_enabled,
                         golden_quote_enabled=golden_quote_enabled,
-                        chat_quality_enabled=chat_quality_enabled,
                     )
 
             # 回填结果
@@ -281,9 +259,9 @@ class AnalysisApplicationService:
             analysis_result = {
                 "statistics": statistics,
                 "topics": topics,
-                "user_titles": user_titles,
+                "user_titles": [],
                 "user_analysis": user_activity,
-                "chat_quality_review": chat_quality_review,
+                "chat_quality_review": None,
             }
 
             # 6. 持久化摘要 (Persistence)
@@ -419,9 +397,6 @@ class AnalysisApplicationService:
             golden_quote_enabled = (
                 self.config_manager.get_golden_quote_analysis_enabled()
             )
-            chat_quality_enabled = (
-                self.config_manager.get_chat_quality_analysis_enabled()
-            )
 
             # 需要将 UnifiedMessage 转换为 legacy 格式供 LLM 分析器使用
             legacy_messages = self.statistics_service._convert_to_legacy_dict(
@@ -434,16 +409,14 @@ class AnalysisApplicationService:
             topics = []
             golden_quotes = []
             token_usage = TokenUsage()
-            chat_quality_review = None
 
-            if topic_enabled or golden_quote_enabled or chat_quality_enabled:
+            if topic_enabled or golden_quote_enabled:
                 async with self.llm_semaphore:
                     logger.debug(f"[LLM] 已进入增量分析队列 (群: {group_id})")
                     (
                         topics,
                         golden_quotes,
                         token_usage,
-                        chat_quality_review,
                     ) = await self.llm_analyzer.analyze_incremental_concurrent(
                         legacy_messages,
                         umo=unified_msg_origin,
@@ -451,7 +424,6 @@ class AnalysisApplicationService:
                         quotes_per_batch=quotes_per_batch,
                         topic_enabled=topic_enabled,
                         golden_quote_enabled=golden_quote_enabled,
-                        chat_quality_enabled=chat_quality_enabled,
                     )
 
             # 8. 构建 IncrementalBatch
@@ -499,25 +471,7 @@ class AnalysisApplicationService:
                 "face_details": statistics.emoji_statistics.face_details,
             }
 
-            # 8f. 转换聊天质量锐评: QualityReview -> dict
-            chat_quality_dict = None
-            if chat_quality_review:
-                chat_quality_dict = {
-                    "title": chat_quality_review.title,
-                    "subtitle": chat_quality_review.subtitle,
-                    "dimensions": [
-                        {
-                            "name": d.name,
-                            "percentage": d.percentage,
-                            "comment": d.comment,
-                            "color": d.color,
-                        }
-                        for d in chat_quality_review.dimensions
-                    ],
-                    "summary": chat_quality_review.summary,
-                }
-
-            # 8g. 获取参与者 ID 和最后消息时间戳
+            # 8f. 获取参与者 ID 和最后消息时间戳
             participant_ids = list({msg.sender_id for msg in unified_messages})
             last_message_timestamp = max(
                 (msg.timestamp for msg in unified_messages), default=0
@@ -539,7 +493,6 @@ class AnalysisApplicationService:
                 topics=new_topics,
                 golden_quotes=new_quotes,
                 token_usage=token_usage_dict,
-                chat_quality_review=chat_quality_dict,
                 last_message_timestamp=last_message_timestamp,
                 participant_ids=participant_ids,
             )
@@ -578,15 +531,14 @@ class AnalysisApplicationService:
         基于滑动窗口内的增量批次生成最终报告。
 
         按 analysis_days × 24h 的时间窗口查询所有批次，
-        合并为 IncrementalState，额外执行用户称号分析，
-        然后生成与传统每日分析格式完全一致的 analysis_result。
+        合并为 IncrementalState，然后生成与传统每日分析格式完全一致的 analysis_result。
 
         流程：
         1. 计算滑动窗口范围
         2. 查询窗口内的所有批次
         3. 检查批次有效性
         4. 合并批次为 IncrementalState
-        5. 执行用户称号 LLM 分析（基于合并后的累积数据）
+        5. 获取适配器（报告发送需要）
         6. 使用 IncrementalMergeService 构建 analysis_result
         7. 持久化到 history_manager
         8. 返回结果
@@ -640,103 +592,9 @@ class AnalysisApplicationService:
             if await self._skip_for_mute(adapter, group_id, "增量最终报告生成"):
                 return {"success": False, "reason": "muted"}
 
-            # 6. 执行分析相关的变量准备
-            user_titles = []
-            user_title_enabled = self.config_manager.get_user_title_analysis_enabled()
-            unified_msg_origin = (
-                f"{platform_id}:GroupMessage:{group_id}" if platform_id else group_id
-            )
-
-            if user_title_enabled and state.user_activities:
-                max_user_titles = self.config_manager.get_max_user_titles()
-                # 从合并后的 user_activities 中取出 top 用户
-                top_users = state.get_user_activity_ranking(max_user_titles)
-
-                try:
-                    async with self.llm_semaphore:
-                        logger.debug(f"[LLM] 已进入称号分析队列 (群: {group_id})")
-                        (
-                            user_titles_result,
-                            title_token_usage,
-                        ) = await self.llm_analyzer.analyze_user_titles(
-                            messages=[],  # 增量模式下不传原始消息
-                            user_activity=state.user_activities,
-                            umo=unified_msg_origin,
-                            top_users=top_users,
-                        )
-                    user_titles = user_titles_result
-
-                    # 将称号分析的 token 消耗追加到状态中
-                    state.total_token_usage["prompt_tokens"] = (
-                        state.total_token_usage.get("prompt_tokens", 0)
-                        + title_token_usage.prompt_tokens
-                    )
-                    state.total_token_usage["completion_tokens"] = (
-                        state.total_token_usage.get("completion_tokens", 0)
-                        + title_token_usage.completion_tokens
-                    )
-                    state.total_token_usage["total_tokens"] = (
-                        state.total_token_usage.get("total_tokens", 0)
-                        + title_token_usage.total_tokens
-                    )
-                except Exception as e:
-                    logger.error(f"增量最终报告用户称号分析失败: {e}", exc_info=True)
-
-            # 6.5 执行聊天质量汇总分析 (如果有多个批次的质量报告)
-            if (
-                self.config_manager.get_chat_quality_analysis_enabled()
-                and state.all_quality_reviews
-            ):
-                try:
-                    async with self.llm_semaphore:
-                        logger.debug(
-                            f"[LLM] 已进入聊天质量汇总分析队列 (群: {group_id})"
-                        )
-                        (
-                            summarized_review,
-                            quality_token_usage,
-                        ) = await self.llm_analyzer.summarize_quality_reviews(
-                            batch_reviews=state.all_quality_reviews,
-                            umo=unified_msg_origin,
-                        )
-                    if summarized_review:
-                        # 更新 state 中的 review 为汇总后的结果
-                        # 这里我们需要将 QualityReview 对象存回 dict 或直接在后续处理中使用
-                        # build_analysis_result 会使用 state.chat_quality_review
-                        state.chat_quality_review = {
-                            "title": summarized_review.title,
-                            "subtitle": summarized_review.subtitle,
-                            "dimensions": [
-                                {
-                                    "name": d.name,
-                                    "percentage": d.percentage,
-                                    "comment": d.comment,
-                                    "color": d.color,
-                                }
-                                for d in summarized_review.dimensions
-                            ],
-                            "summary": summarized_review.summary,
-                        }
-
-                        # 累加 Token
-                        state.total_token_usage["prompt_tokens"] = (
-                            state.total_token_usage.get("prompt_tokens", 0)
-                            + quality_token_usage.prompt_tokens
-                        )
-                        state.total_token_usage["completion_tokens"] = (
-                            state.total_token_usage.get("completion_tokens", 0)
-                            + quality_token_usage.completion_tokens
-                        )
-                        state.total_token_usage["total_tokens"] = (
-                            state.total_token_usage.get("total_tokens", 0)
-                            + quality_token_usage.total_tokens
-                        )
-                except Exception as e:
-                    logger.error(f"增量最终报告聊天质量汇总失败: {e}", exc_info=True)
-
-            # 7. 构建 analysis_result
+            # 6. 构建 analysis_result
             analysis_result = self.incremental_merge_service.build_analysis_result(
-                state, user_titles
+                state
             )
 
             # 8. 持久化到 history_manager

@@ -4,7 +4,6 @@
 """
 
 from dataclasses import dataclass, field
-from typing import Optional
 
 
 @dataclass
@@ -20,17 +19,6 @@ class SummaryTopic:
 
 
 @dataclass
-class UserTitle:
-    """用户称号数据结构"""
-
-    name: str
-    user_id: str  # 原 qq 字段
-    title: str
-    mbti: str
-    reason: str
-
-
-@dataclass
 class GoldenQuote:
     """群聊金句数据结构"""
 
@@ -38,26 +26,6 @@ class GoldenQuote:
     sender: str
     reason: str
     user_id: str = ""  # 原 qq 字段
-
-
-@dataclass
-class QualityDimension:
-    """聊天质量维度数据结构"""
-
-    name: str  # 维度名称
-    percentage: float  # 占比
-    comment: str  # 犀利点评
-    color: str = "#607d8b"  # 颜色
-
-
-@dataclass
-class QualityReview:
-    """聊天质量锐评数据结构"""
-
-    title: str
-    subtitle: str
-    dimensions: list[QualityDimension]
-    summary: str
 
 
 @dataclass
@@ -118,4 +86,3 @@ class GroupStatistics:
         default_factory=ActivityVisualization
     )
     token_usage: TokenUsage = field(default_factory=TokenUsage)
-    chat_quality_review: Optional["QualityReview"] = None

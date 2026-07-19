@@ -42,7 +42,7 @@ class HistoryManager:
 
         Args:
             group_id (str): 群组 ID
-            analysis_result (dict[str, Any]): 包含 statistics, topics, user_titles 的完整分析对象
+            analysis_result (dict[str, Any]): 包含 statistics, topics 的完整分析对象
             date_str (str, optional): 归档日期 (YYYY-MM-DD)，缺省为当天
             time_str (str, optional): 归档时间点 (HH-MM)，缺省为当前时刻
 
@@ -62,7 +62,6 @@ class HistoryManager:
             # 从分析结果中剥离非持久化字段，提取核心统计元数据
             stats = analysis_result.get("statistics")
             topics = analysis_result.get("topics", [])
-            user_titles = analysis_result.get("user_titles", [])
 
             summary = {
                 "message_count": getattr(stats, "message_count", 0) if stats else 0,
@@ -70,7 +69,6 @@ class HistoryManager:
                 if stats
                 else 0,
                 "topics": [{"topic": t.topic, "detail": t.detail} for t in topics],
-                "user_titles_count": len(user_titles),
                 "generated_at": now.strftime("%Y-%m-%d %H:%M:%S"),
             }
 

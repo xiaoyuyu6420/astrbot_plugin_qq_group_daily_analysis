@@ -1,24 +1,20 @@
 """
 LLM分析器模块
-负责协调各个分析器进行话题分析、用户称号分析和金句分析
+负责协调各个分析器进行话题分析和金句分析
 """
 
 import asyncio
 
 from ...domain.models.data_models import (
     GoldenQuote,
-    QualityReview,
     SummaryTopic,
     TokenUsage,
-    UserTitle,
 )
 from ...domain.repositories.analysis_repository import IAnalysisProvider
 from ...shared.constants import PLUGIN_NAME
 from ...utils.logger import logger
-from .analyzers.chat_quality_analyzer import ChatQualityAnalyzer
 from .analyzers.golden_quote_analyzer import GoldenQuoteAnalyzer
 from .analyzers.topic_analyzer import TopicAnalyzer
-from .analyzers.user_title_analyzer import UserTitleAnalyzer
 from .utils.json_utils import fix_json
 from .utils.llm_utils import call_provider_with_retry
 
@@ -31,7 +27,6 @@ class LLMAnalyzer(IAnalysisProvider):
     """
 
     topic_analyzer: TopicAnalyzer
-    user_title_analyzer: UserTitleAnalyzer
     golden_quote_analyzer: GoldenQuoteAnalyzer
 
     def __init__(self, context, config_manager):
@@ -47,9 +42,7 @@ class LLMAnalyzer(IAnalysisProvider):
 
         # 初始化各个专门的分析器
         self.topic_analyzer = TopicAnalyzer(context, config_manager)
-        self.user_title_analyzer = UserTitleAnalyzer(context, config_manager)
         self.golden_quote_analyzer = GoldenQuoteAnalyzer(context, config_manager)
-        self.chat_quality_analyzer = ChatQualityAnalyzer(context, config_manager)
 
     async def analyze_topics(
         self,
@@ -85,47 +78,6 @@ class LLMAnalyzer(IAnalysisProvider):
             return await self.topic_analyzer.analyze_topics(messages, umo, session_id)
         except Exception as e:
             logger.error(f"话题分析失败: {e}")
-            return [], TokenUsage()
-
-    async def analyze_user_titles(
-        self,
-        messages: list[dict],
-        user_activity: dict,
-        umo: str | None = None,
-        top_users: list[dict] | None = None,
-        session_id: str | None = None,
-    ) -> tuple[list[UserTitle], TokenUsage]:
-        """
-        使用LLM分析用户称号
-        保持原有接口，委托给专门的UserTitleAnalyzer处理
-
-        Args:
-            messages: 群聊消息列表
-            user_activity: 用户分析统计
-            umo: 模型唯一标识符
-            top_users: 活跃用户列表(可选)
-            session_id: 会话ID (用于调试模式)
-
-        Returns:
-            (用户称号列表, Token使用统计)
-        """
-        try:
-            if not session_id:
-                from datetime import datetime
-
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                if umo:
-                    safe_umo = umo.replace(":", "_")
-                    session_id = f"{timestamp}_{safe_umo}"
-                else:
-                    session_id = timestamp
-
-            logger.info(f"开始用户称号分析, session_id: {session_id}")
-            return await self.user_title_analyzer.analyze_user_titles(
-                messages, user_activity, umo, top_users, session_id
-            )
-        except Exception as e:
-            logger.error(f"用户称号分析失败: {e}")
             return [], TokenUsage()
 
     async def analyze_golden_quotes(
@@ -165,19 +117,6 @@ class LLMAnalyzer(IAnalysisProvider):
             logger.error(f"金句分析失败: {e}")
             return [], TokenUsage()
 
-    async def summarize_quality_reviews(
-        self,
-        batch_reviews: list[dict],
-        umo: str | None = None,
-        session_id: str | None = None,
-    ) -> tuple[QualityReview | None, TokenUsage]:
-        """
-        汇总多个质量分析报告（增量模式使用）
-        """
-        return await self.chat_quality_analyzer.summarize_batch_reviews(
-            batch_reviews, umo, session_id
-        )
-
     async def analyze_all_concurrent(
         self,
         messages: list[dict],
@@ -185,18 +124,10 @@ class LLMAnalyzer(IAnalysisProvider):
         umo: str | None = None,
         top_users: list[dict] | None = None,
         topic_enabled: bool = True,
-        user_title_enabled: bool = True,
         golden_quote_enabled: bool = True,
-        chat_quality_enabled: bool = False,
-    ) -> tuple[
-        list[SummaryTopic],
-        list[UserTitle],
-        list[GoldenQuote],
-        TokenUsage,
-        QualityReview | None,
-    ]:
+    ) -> tuple[list[SummaryTopic], list[GoldenQuote], TokenUsage]:
         """
-        并发执行所有分析任务（话题、用户称号、金句），支持按需启用。
+        并发执行分析任务（话题、金句），支持按需启用。
 
         Args:
             messages: 群聊消息列表
@@ -204,11 +135,10 @@ class LLMAnalyzer(IAnalysisProvider):
             umo: 模型唯一标识符
             top_users: 活跃用户列表(可选)
             topic_enabled: 是否启用话题分析
-            user_title_enabled: 是否启用用户称号分析
             golden_quote_enabled: 是否启用金句分析
 
         Returns:
-            (话题列表, 用户称号列表, 金句列表, 总Token使用统计)
+            (话题列表, 金句列表, 总Token使用统计)
         """
         try:
             from datetime import datetime
@@ -221,7 +151,7 @@ class LLMAnalyzer(IAnalysisProvider):
                 session_id = timestamp
 
             logger.info(
-                f"开始并发执行分析任务 (话题:{topic_enabled}, 称号:{user_title_enabled}, 金句:{golden_quote_enabled})，会话ID: {session_id}"
+                f"开始并发执行分析任务 (话题:{topic_enabled}, 金句:{golden_quote_enabled})，会话ID: {session_id}"
             )
 
             # 保存原始消息数据 (Debug Mode)
@@ -238,14 +168,6 @@ class LLMAnalyzer(IAnalysisProvider):
                 )
                 task_names.append("topic")
 
-            if user_title_enabled:
-                tasks.append(
-                    self.user_title_analyzer.analyze_user_titles(
-                        messages, user_activity, umo, top_users, session_id
-                    )
-                )
-                task_names.append("user_title")
-
             if golden_quote_enabled:
                 tasks.append(
                     self.golden_quote_analyzer.analyze_golden_quotes(
@@ -254,25 +176,14 @@ class LLMAnalyzer(IAnalysisProvider):
                 )
                 task_names.append("golden_quote")
 
-            if chat_quality_enabled:
-                tasks.append(
-                    self.chat_quality_analyzer.analyze_quality(
-                        messages, umo, session_id
-                    )
-                )
-                task_names.append("chat_quality")
-
             if not tasks:
-                return [], [], [], TokenUsage(), None
+                return [], [], TokenUsage()
 
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
             # 处理结果
             topics, topic_usage = [], TokenUsage()
-            user_titles, title_usage = [], TokenUsage()
             golden_quotes, quote_usage = [], TokenUsage()
-            chat_quality_review = None
-            quality_usage = TokenUsage()  # Initialize here
 
             for i, result in enumerate(results):
                 name = task_names[i]
@@ -282,45 +193,31 @@ class LLMAnalyzer(IAnalysisProvider):
 
                 if name == "topic" and isinstance(result, tuple):
                     topics, topic_usage = result
-                elif name == "user_title" and isinstance(result, tuple):
-                    user_titles, title_usage = result
                 elif name == "golden_quote" and isinstance(result, tuple):
                     golden_quotes, quote_usage = result
-                elif name == "chat_quality" and isinstance(result, tuple):
-                    chat_quality_review, quality_usage = result
-                    if not isinstance(quality_usage, TokenUsage):
-                        quality_usage = TokenUsage()
 
             # 合并Token使用统计
             total_usage = TokenUsage(
                 prompt_tokens=topic_usage.prompt_tokens
-                + title_usage.prompt_tokens
-                + quote_usage.prompt_tokens
-                + quality_usage.prompt_tokens,
+                + quote_usage.prompt_tokens,
                 completion_tokens=topic_usage.completion_tokens
-                + title_usage.completion_tokens
-                + quote_usage.completion_tokens
-                + quality_usage.completion_tokens,
+                + quote_usage.completion_tokens,
                 total_tokens=topic_usage.total_tokens
-                + title_usage.total_tokens
-                + quote_usage.total_tokens
-                + quality_usage.total_tokens,
+                + quote_usage.total_tokens,
             )
 
             logger.info(
-                f"并发分析完成 - 话题: {len(topics)}, 称号: {len(user_titles)}, 金句: {len(golden_quotes)}, 质量锐评: {1 if chat_quality_review else 0}"
+                f"并发分析完成 - 话题: {len(topics)}, 金句: {len(golden_quotes)}"
             )
             return (
                 topics,
-                user_titles,
                 golden_quotes,
                 total_usage,
-                chat_quality_review,
             )
 
         except Exception as e:
             logger.error(f"并发分析失败: {e}")
-            return [], [], [], TokenUsage(), None
+            return [], [], TokenUsage()
 
     async def analyze_incremental_concurrent(
         self,
@@ -330,11 +227,10 @@ class LLMAnalyzer(IAnalysisProvider):
         quotes_per_batch: int = 1,
         topic_enabled: bool = True,
         golden_quote_enabled: bool = True,
-        chat_quality_enabled: bool = False,
-    ) -> tuple[list[SummaryTopic], list[GoldenQuote], TokenUsage, QualityReview | None]:
+    ) -> tuple[list[SummaryTopic], list[GoldenQuote], TokenUsage]:
         """
         增量分析模式的并发执行方法。
-        仅执行话题分析和金句分析（用户称号分析在最终报告时执行），
+        仅执行话题分析和金句分析，
         使用较小的批次数量以控制单次分析的输出规模。
 
         Args:
@@ -359,7 +255,7 @@ class LLMAnalyzer(IAnalysisProvider):
                 session_id = f"incr_{timestamp}"
 
             logger.info(
-                f"开始增量并发分析 (话题:{topic_enabled}/{topics_per_batch}, 金句:{golden_quote_enabled}/{quotes_per_batch}, 质量锐评:{chat_quality_enabled})，"
+                f"开始增量并发分析 (话题:{topic_enabled}/{topics_per_batch}, 金句:{golden_quote_enabled}/{quotes_per_batch})，"
                 f"消息数量: {len(messages)}，会话ID: {session_id}"
             )
 
@@ -372,7 +268,7 @@ class LLMAnalyzer(IAnalysisProvider):
             self.golden_quote_analyzer._incremental_max_count = quotes_per_batch
 
             try:
-                # 构建并发任务列表（仅话题和金句，不包含用户称号）
+                # 构建并发任务列表（仅话题和金句）
                 tasks = []
                 task_names = []
 
@@ -390,24 +286,14 @@ class LLMAnalyzer(IAnalysisProvider):
                     )
                     task_names.append("golden_quote")
 
-                if chat_quality_enabled:
-                    tasks.append(
-                        self.chat_quality_analyzer.analyze_quality(
-                            messages, umo, session_id
-                        )
-                    )
-                    task_names.append("chat_quality")
-
                 if not tasks:
-                    return [], [], TokenUsage(), None
+                    return [], [], TokenUsage()
 
                 results = await asyncio.gather(*tasks, return_exceptions=True)
 
                 # 处理结果
                 topics, topic_usage = [], TokenUsage()
                 golden_quotes, quote_usage = [], TokenUsage()
-                chat_quality_review = None
-                quality_usage = TokenUsage()
 
                 for i, result in enumerate(results):
                     name = task_names[i]
@@ -419,29 +305,22 @@ class LLMAnalyzer(IAnalysisProvider):
                         topics, topic_usage = result
                     elif name == "golden_quote" and isinstance(result, tuple):
                         golden_quotes, quote_usage = result
-                    elif name == "chat_quality" and isinstance(result, tuple):
-                        chat_quality_review, quality_usage = result
-                        if not isinstance(quality_usage, TokenUsage):
-                            quality_usage = TokenUsage()
 
                 # 合并Token使用统计
                 total_usage = TokenUsage(
                     prompt_tokens=topic_usage.prompt_tokens
-                    + quote_usage.prompt_tokens
-                    + quality_usage.prompt_tokens,
+                    + quote_usage.prompt_tokens,
                     completion_tokens=topic_usage.completion_tokens
-                    + quote_usage.completion_tokens
-                    + quality_usage.completion_tokens,
+                    + quote_usage.completion_tokens,
                     total_tokens=topic_usage.total_tokens
-                    + quote_usage.total_tokens
-                    + quality_usage.total_tokens,
+                    + quote_usage.total_tokens,
                 )
 
                 logger.info(
-                    f"增量并发分析完成 - 话题: {len(topics)}, 金句: {len(golden_quotes)}, 质量锐评: {1 if chat_quality_review else 0}, "
+                    f"增量并发分析完成 - 话题: {len(topics)}, 金句: {len(golden_quotes)}, "
                     f"Token消耗: {total_usage.total_tokens}"
                 )
-                return topics, golden_quotes, total_usage, chat_quality_review
+                return topics, golden_quotes, total_usage
 
             finally:
                 # 无论成功或失败，都要恢复原始的最大数量设置
@@ -450,7 +329,7 @@ class LLMAnalyzer(IAnalysisProvider):
 
         except Exception as e:
             logger.error(f"增量并发分析失败: {e}", exc_info=True)
-            return [], [], TokenUsage(), None
+            return [], [], TokenUsage()
 
     def _save_debug_messages(self, messages: list[dict], session_id: str):
         """

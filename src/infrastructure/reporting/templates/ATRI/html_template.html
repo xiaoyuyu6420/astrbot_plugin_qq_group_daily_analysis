@@ -806,7 +806,6 @@
         /* Removed .section::before */
 
 
-
         .tide-section {
             background: linear-gradient(180deg, rgba(200, 245, 230, 0.9), rgba(220, 250, 240, 0.85)), radial-gradient(circle, rgba(130, 220, 185, 0.35) 2px, transparent 2px);
             background-size: auto, 24px 24px;
@@ -1094,7 +1093,6 @@
         }
 
 
-
         .quote-wrapper {
             display: flex;
             flex-direction: column;
@@ -1289,7 +1287,6 @@
         }
 
 
-
         .token-label {
             color: var(--text-sub);
             font-size: 13px;
@@ -1342,7 +1339,6 @@
         .footer-repo:hover {
             opacity: 1;
         }
-
 
 
         .token-section {
@@ -2829,8 +2825,7 @@
                             src="{{ t2i_atri_font_mirror }}/file/1775132808652_1774881267385_得意-1.gif" alt="badge icon">
                     </div>
                 </div>
-                <div class="html-slot title-grid">{{ titles_html | safe }}</div>
-            </section>
+</section>
 
             <section class="glass-card section quote-section">
                 <div class="section-header">
@@ -2851,30 +2846,7 @@
                 </div>
                 <div class="html-slot">{{ quotes_html | safe }}</div>
             </section>
-
-            {% if chat_quality_html %}
-            <section class="glass-card section review-section">
-                <div class="section-header">
-                    <div class="section-title-wrap">
-                        <div class="section-icon"><svg class="icon-svg">
-                                <use href="#icon-flower-2"></use>
-                            </svg></div>
-                        <div>
-                            <h3 class="section-title">亚托莉观测报告<img class="section-kawaii"
-                                    src="{{ t2i_atri_font_mirror }}/file/1775132817115_1774881269400_可爱-1.gif"
-                                    alt="kawaii icon"></h3>
-                            <div class="section-sub">来自高性能亚托莉的每日特别观测报告！</div>
-                        </div>
-                    </div>
-                    <div class="section-badge">GROUP VIBE <img class="badge-kawaii"
-                            src="{{ t2i_atri_font_mirror }}/file/1775132804506_1774881263342_观察.gif" alt="badge icon">
-                    </div>
-                </div>
-                <div class="html-slot">{{ chat_quality_html | safe }}</div>
-            </section>
-            {% endif %}
-
-            <section class="glass-card section token-section">
+<section class="glass-card section token-section">
                 <div class="section-header">
                     <div class="section-title-wrap">
                         <div class="section-icon"><svg class="icon-svg">
@@ -3096,6 +3068,5 @@
 </body>
 
 </html>
-
 
 

@@ -520,17 +520,8 @@
                 </div>
                 {{hourly_chart_html | safe}}
             </div>
- 
-            {% if chat_quality_html %}
-            <div class="section full-width-section">
-                <h2 class="section-title">群聊质量分析</h2>
-                {{ chat_quality_html | safe }}
-            </div>
-            {% endif %}
- 
-            {{topics_html | safe}}
-            {{titles_html | safe}}
-            {{quotes_html | safe}}
+{{topics_html | safe}}
+{{quotes_html | safe}}
         </div>
         <div class="footer">
             由 AstrBot 群日常分析插件 生成 | {{current_datetime}}<br>
@@ -541,6 +532,5 @@
 </body>
 
 </html>
-
 
 

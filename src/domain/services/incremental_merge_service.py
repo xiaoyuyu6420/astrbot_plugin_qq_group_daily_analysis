@@ -20,8 +20,6 @@ from ...domain.models.data_models import (
     EmojiStatistics,
     GoldenQuote,
     GroupStatistics,
-    QualityDimension,
-    QualityReview,
     SummaryTopic,
     TokenUsage,
 )
@@ -174,16 +172,9 @@ class IncrementalMergeService:
             # 合并参与者 ID（取并集）
             state.all_participant_ids.update(batch.participant_ids)
 
-            # 收集所有批次的质量锐评（用于最终汇总）
-            if batch.chat_quality_review:
-                state.all_quality_reviews.append(batch.chat_quality_review)
-
             # 记录最后分析消息时间戳（取最大值）
             if batch.last_message_timestamp > state.last_analyzed_message_timestamp:
                 state.last_analyzed_message_timestamp = batch.last_message_timestamp
-                # 更新锐评为最新批次的 (如果没有汇总分析，则作为兜底)
-                if batch.chat_quality_review:
-                    state.chat_quality_review = batch.chat_quality_review
 
         logger.info(
             f"合并批次完成: 群={state.group_id}, "
@@ -242,27 +233,6 @@ class IncrementalMergeService:
         # 获取最活跃时段描述
         most_active_period = state.get_most_active_period()
 
-        # 转换聊天质量锐评 (如果有)
-        chat_quality_review = None
-        if state.chat_quality_review:
-            review_dict = state.chat_quality_review
-            dimensions_dict = review_dict.get("dimensions", [])
-            dimensions = [
-                QualityDimension(
-                    name=d.get("name", "未知"),
-                    percentage=float(d.get("percentage", 0)),
-                    comment=d.get("comment", ""),
-                    color=d.get("color", "#607d8b"),
-                )
-                for d in dimensions_dict
-            ]
-            chat_quality_review = QualityReview(
-                title=review_dict.get("title", "聊天质量锐评"),
-                subtitle=review_dict.get("subtitle", "今天的群里发生了什么？"),
-                dimensions=dimensions,
-                summary=review_dict.get("summary", "今天也是充满活力的一天。"),
-            )
-
         statistics = GroupStatistics(
             message_count=state.total_message_count,
             total_characters=state.total_character_count,
@@ -273,7 +243,6 @@ class IncrementalMergeService:
             emoji_statistics=emoji_statistics,
             activity_visualization=activity_visualization,
             token_usage=token_usage,
-            chat_quality_review=chat_quality_review,
         )
 
         logger.debug(
@@ -339,7 +308,6 @@ class IncrementalMergeService:
     def build_analysis_result(
         self,
         state: IncrementalState,
-        user_titles: list | None = None,
     ) -> dict:
         """
         从增量状态构建完整的 analysis_result 字典。
@@ -349,10 +317,9 @@ class IncrementalMergeService:
 
         Args:
             state: 由 merge_batches 合并生成的增量分析状态
-            user_titles: 用户称号列表（由最终报告时 LLM 分析生成）
 
         Returns:
-            dict: 包含 statistics、topics、user_titles、user_analysis 的结果字典
+            dict: 包含 statistics、topics、user_analysis 的结果字典
         """
         statistics = self.build_final_statistics(state)
         topics = self.build_topics_for_report(state)
@@ -364,9 +331,9 @@ class IncrementalMergeService:
         analysis_result = {
             "statistics": statistics,
             "topics": topics,
-            "user_titles": user_titles or [],
+            "user_titles": [],
             "user_analysis": state.user_activities,
-            "chat_quality_review": statistics.chat_quality_review,
+            "chat_quality_review": None,
         }
 
         logger.info(

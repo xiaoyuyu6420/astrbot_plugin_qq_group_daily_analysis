@@ -778,18 +778,7 @@
         </div>
 
         <!-- Chat Quality Review -->
-        {% if chat_quality_html %}
-        <div class="section-label">
-            Quality Analysis <span>STABILITY_METRICS</span>
-        </div>
-        <div class="grid-container">
-            <div style="grid-column: span 12;">
-                {{ chat_quality_html|safe }}
-            </div>
-        </div>
-        {% endif %}
-
-        <!-- Topics -->
+<!-- Topics -->
         {% if topics_html %}
         <div class="section-label">
             Thread Matrix <span>TOPICS_MODULE</span>
@@ -800,20 +789,7 @@
         {% endif %}
 
         <!-- Titles -->
-        {% if titles_html %}
-        <div class="section-label">
-            Operator Registry <span>TITLES_MODULE</span>
-        </div>
-        <div class="grid-container">
-            <div class="content-card">
-                <div class="title-grid">
-                    {{titles_html|safe}}
-                </div>
-            </div>
-        </div>
-        {% endif %}
-
-        <!-- Quotes -->
+<!-- Quotes -->
         {% if quotes_html %}
         <div class="section-label">
             Golden Lines <span>QUOTES_MODULE</span>
@@ -841,6 +817,5 @@
 </body>
 
 </html>
-
 
 

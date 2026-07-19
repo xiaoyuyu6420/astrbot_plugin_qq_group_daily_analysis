@@ -158,33 +158,15 @@ class ConfigManager:
         """获取是否启用话题分析"""
         return self._get_group("analysis_features").get("topic_analysis_enabled", True)
 
-    def get_user_title_analysis_enabled(self) -> bool:
-        """获取是否启用用户称号分析。
-
-        定制版已移除称号/MBTI 等娱乐功能，始终关闭，避免旧配置把娱乐分析重新打开。
-        """
-        return False
-
     def get_golden_quote_analysis_enabled(self) -> bool:
         """获取是否启用信息差/干货提取（原金句分析）"""
         return self._get_group("analysis_features").get(
             "golden_quote_analysis_enabled", True
         )
 
-    def get_chat_quality_analysis_enabled(self) -> bool:
-        """获取是否启用聊天质量锐评。
-
-        定制版已移除娱乐锐评，始终关闭，避免旧配置重新打开。
-        """
-        return False
-
     def get_max_topics(self) -> int:
         """获取最大话题数量"""
         return self._get_group("analysis_features").get("max_topics", 5)
-
-    def get_max_user_titles(self) -> int:
-        """获取最大用户称号数量"""
-        return self._get_group("analysis_features").get("max_user_titles", 8)
 
     def get_max_golden_quotes(self) -> int:
         """获取最大金句数量"""
@@ -267,10 +249,6 @@ class ConfigManager:
         """获取话题分析专用 Provider ID"""
         return self._get_group("llm").get("topic_provider_id", "")
 
-    def get_user_title_provider_id(self) -> str:
-        """获取用户称号分析专用 Provider ID"""
-        return self._get_group("llm").get("user_title_provider_id", "")
-
     def get_golden_quote_provider_id(self) -> str:
         """获取金句分析专用 Provider ID"""
         return self._get_group("llm").get("golden_quote_provider_id", "")
@@ -333,16 +311,6 @@ class ConfigManager:
             return prompt
         return ""
 
-    def get_user_title_analysis_prompt(self, style: str = "user_title_prompt") -> str:
-        """获取用户称号分析提示词模板"""
-        prompts_config = self._get_group("prompts").get(
-            "user_title_analysis_prompts", {}
-        )
-        prompt = prompts_config.get(style, "")
-        if prompt:
-            return prompt
-        return ""
-
     def get_golden_quote_analysis_prompt(
         self, style: str = "golden_quote_v2_prompt"
     ) -> str:
@@ -355,29 +323,11 @@ class ConfigManager:
             return prompt
         return ""
 
-    def get_quality_analysis_prompt(self, style: str = "quality_v2_prompt") -> str:
-        """获取聊天质量分析提示词模板"""
-        prompts_config = self._get_group("prompts").get("quality_analysis_prompts", {})
-        prompt = prompts_config.get(style, "")
-        if prompt:
-            return prompt
-        return ""
-
-    def set_quality_analysis_prompt(self, prompt: str):
-        """设置聊天质量分析提示词模板"""
-        prompts = self._ensure_group("prompts")
-        if "quality_analysis_prompts" not in prompts:
-            prompts["quality_analysis_prompts"] = {}
-        prompts["quality_analysis_prompts"]["quality_v2_prompt"] = prompt
-        self.config.save_config()
-
     def _upgrade_config_item(self, group: str, key: str, setter_func):
         """升级指定配置项的值（从 str.format -> string.Template），并回写。"""
         # 如果是 prompts，则先取 prompts 分组，再取子分组 (group)
         if group in (
-            "quality_analysis_prompts",
             "topic_analysis_prompts",
-            "user_title_analysis_prompts",
             "golden_quote_analysis_prompts",
         ):
             target_group = self._get_group("prompts").get(group, {})
@@ -402,24 +352,9 @@ class ConfigManager:
         modified = False
         # 1. 提示词模板升级
         modified |= self._upgrade_config_item(
-            "quality_analysis_prompts",
-            "quality_v2_prompt",
-            self.set_quality_analysis_prompt,
-        )
-        modified |= self._upgrade_config_item(
-            "quality_analysis_prompts",
-            "quality_summary_prompt",
-            self.set_quality_summary_prompt,
-        )
-        modified |= self._upgrade_config_item(
             "topic_analysis_prompts",
             "topic_prompt",
             self.set_topic_analysis_prompt,
-        )
-        modified |= self._upgrade_config_item(
-            "user_title_analysis_prompts",
-            "user_title_prompt",
-            self.set_user_title_analysis_prompt,
         )
         modified |= self._upgrade_config_item(
             "golden_quote_analysis_prompts",
@@ -440,36 +375,12 @@ class ConfigManager:
             )
         return modified
 
-    def get_quality_summary_prompt(self, style: str = "quality_summary_prompt") -> str:
-        """获取聊天质量汇总分析提示词模板"""
-        prompts_config = self._get_group("prompts").get("quality_analysis_prompts", {})
-        prompt = prompts_config.get(style, "")
-        if prompt:
-            return prompt
-        return ""
-
     def set_topic_analysis_prompt(self, prompt: str):
         """设置话题分析提示词模板"""
         prompts = self._ensure_group("prompts")
         if "topic_analysis_prompts" not in prompts:
             prompts["topic_analysis_prompts"] = {}
         prompts["topic_analysis_prompts"]["topic_prompt"] = prompt
-        self.config.save_config()
-
-    def set_quality_summary_prompt(self, prompt: str):
-        """设置聊天质量汇总分析提示词模板"""
-        prompts = self._ensure_group("prompts")
-        if "quality_analysis_prompts" not in prompts:
-            prompts["quality_analysis_prompts"] = {}
-        prompts["quality_analysis_prompts"]["quality_summary_prompt"] = prompt
-        self.config.save_config()
-
-    def set_user_title_analysis_prompt(self, prompt: str):
-        """设置用户称号分析提示词模板"""
-        prompts = self._ensure_group("prompts")
-        if "user_title_analysis_prompts" not in prompts:
-            prompts["user_title_analysis_prompts"] = {}
-        prompts["user_title_analysis_prompts"]["user_title_prompt"] = prompt
         self.config.save_config()
 
     def set_golden_quote_analysis_prompt(self, prompt: str):
@@ -711,14 +622,6 @@ class ConfigManager:
         self._ensure_group("analysis_features")["topic_analysis_enabled"] = enabled
         self.config.save_config()
 
-    def set_user_title_analysis_enabled(self, enabled: bool):
-        """设置是否启用用户称号分析。
-
-        定制版已移除娱乐称号功能，强制写入 False，忽略传入值。
-        """
-        self._ensure_group("analysis_features")["user_title_analysis_enabled"] = False
-        self.config.save_config()
-
     def set_golden_quote_analysis_enabled(self, enabled: bool):
         """设置是否启用信息差/干货提取（原金句分析）"""
         self._ensure_group("analysis_features")["golden_quote_analysis_enabled"] = (
@@ -726,22 +629,9 @@ class ConfigManager:
         )
         self.config.save_config()
 
-    def set_chat_quality_analysis_enabled(self, enabled: bool):
-        """设置是否启用聊天质量锐评。
-
-        定制版已移除娱乐锐评功能，强制写入 False，忽略传入值。
-        """
-        self._ensure_group("analysis_features")["chat_quality_analysis_enabled"] = False
-        self.config.save_config()
-
     def set_max_topics(self, count: int):
         """设置最大话题数量"""
         self._ensure_group("analysis_features")["max_topics"] = count
-        self.config.save_config()
-
-    def set_max_user_titles(self, count: int):
-        """设置最大用户称号数量"""
-        self._ensure_group("analysis_features")["max_user_titles"] = count
         self.config.save_config()
 
     def set_max_golden_quotes(self, count: int):
@@ -775,34 +665,6 @@ class ConfigManager:
         """设置是否在群分析完成后发送文本回复"""
         self._ensure_group("basic")["enable_analysis_reply"] = enabled
         self.config.save_config()
-
-    def get_profile_display_mode(self) -> str:
-        """获取人格标签展示模式。"""
-        mode = str(self._get_group("basic").get("profile_display_mode", "mbti")).lower()
-        if mode not in {"mbti", "sbti", "acgti"}:
-            return "mbti"
-        return mode
-
-    def get_profile_image_opacity(self) -> float:
-        """获取人格背景图透明度。"""
-        value = self._get_group("basic").get("profile_image_opacity", 0.12)
-        try:
-            return max(0.0, min(1.0, float(value)))
-        except (TypeError, ValueError):
-            return 0.12
-
-    def get_profile_image_size_mode(self) -> str:
-        """获取人格背景图尺寸模式。"""
-        mode = str(
-            self._get_group("basic").get("profile_image_size_mode", "contain")
-        ).lower()
-        if mode not in {"contain", "cover"}:
-            return "contain"
-        return mode
-
-    def get_profile_mapping_config(self) -> str:
-        """获取人格映射配置(JSON 文本)。"""
-        return str(self._get_group("basic").get("profile_mapping_config", "")).strip()
 
     # ========== 群文件/群相册上传配置 ==========
 

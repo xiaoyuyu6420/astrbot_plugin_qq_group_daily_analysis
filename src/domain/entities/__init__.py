@@ -16,7 +16,6 @@ from .analysis_result import (
     GroupStatistics,
     SummaryTopic,
     TokenUsage,
-    UserTitle,
 )
 from .analysis_task import AnalysisTask, TaskStatus
 from .incremental_state import IncrementalBatch, IncrementalState
@@ -26,7 +25,6 @@ __all__ = [
     "TaskStatus",
     "GroupAnalysisResult",
     "SummaryTopic",
-    "UserTitle",
     "GoldenQuote",
     "TokenUsage",
     "EmojiStatistics",

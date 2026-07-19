@@ -1,678 +1,716 @@
 {
-  "admin_notify": {
-    "description": "管理员私聊推送（情报及时送达）",
-    "type": "object",
-    "hint": "开启后报告只私聊管理员、不发群。管理员 QQ 读取 AstrBot 超级管理员，也可额外补充。注意：bot 与管理员需互为好友。",
-    "items": {
-      "enable_admin_notify": {
-        "type": "bool",
-        "default": true,
-        "description": "开启管理员私聊通知",
-        "hint": "定制版默认开启。开启=定时报告只私聊管理员、不发群；关闭=原行为（发群）。"
-      },
-      "extra_admin_qq": {
-        "type": "list",
-        "default": [],
-        "description": "额外管理员 QQ（选填）",
-        "hint": "除了 AstrBot 超级管理员外，还想额外接收报告的 QQ 号。填纯数字 QQ 号，例如 [\"123456\", \"789012\"]。",
-        "items": {
-          "type": "string"
-        }
-      }
-    }
-  },
-  "message_monitor": {
-    "description": "实时消息监控（盯人预警·整窗汇总）",
-    "type": "object",
-    "hint": "实时监听监控群的消息，发现有价值信息立即/定时推给你。两种模式可选：keyword（关键词即时——任何人发命中关键词的消息立刻推，适合盯全群），window（整窗汇总——攒 X 分钟让 LLM 在完整上下文里提取目标 QQ 价值信息，适合盯特定人）。需要 bot 与推送目标 QQ 互为好友。",
-    "items": {
-      "enable_monitor": {
-        "type": "bool",
-        "default": false,
-        "description": "开启实时消息监控",
-        "hint": "开启后，按 monitor_mode 选择的模式工作。关闭=不盯。"
-      },
-      "monitor_mode": {
-        "type": "string",
-        "description": "监控模式",
-        "options": [
-          "keyword",
-          "window"
-        ],
-        "default": "window",
-        "hint": "keyword=关键词即时：任何人发的消息命中关键词/正则就立即推送（快，适合盯全群的关键词如 API key/资源）。window=整窗汇总：攒 X 分钟的消息让 LLM 在完整上下文里提取目标 QQ 价值信息（准，适合盯特定人）。"
-      },
-      "monitored_qqs": {
-        "type": "list",
-        "description": "要盯的 QQ 号",
-        "default": [],
-        "hint": "要盯的 QQ 号（纯数字）。window 模式必填——LLM 重点提取这些人的发言。keyword 模式下可选——填了则只检测这些人的消息，空=检测群里所有人。",
-        "items": {
-          "type": "string"
-        }
-      },
-      "monitored_groups": {
-        "type": "list",
-        "description": "监控群列表（必填）",
-        "default": [],
-        "hint": "要监控的群号（纯数字）。必填——插件会攒这些群里的【所有人】消息作为上下文，让 LLM 在完整对话中判断目标 QQ 的发言是否有价值。空=不盯任何群。",
-        "items": {
-          "type": "string"
-        }
-      },
-      "extra_keywords": {
-        "type": "list",
-        "description": "自定义关键词",
-        "default": [],
-        "hint": "自定义关键词列表。keyword 模式下任何人发的消息命中这些词就推送；window 模式下会提示 LLM 特别关注。例如 [\"破解\", \"激活码\", \"资源\"]。",
-        "items": {
-          "type": "string"
-        }
-      },
-      "use_llm_confirm": {
-        "type": "bool",
-        "default": true,
-        "description": "用 LLM 二次确认",
-        "hint": "keyword 模式：命中关键词后用 LLM 二次确认是否真有用（减少误推）。window 模式：每个批次用 LLM 提取有价值信息。关闭=省 token 但噪音多。LLM 不可用时自动降级。"
-      },
-      "flush_interval": {
-        "type": "int",
-        "default": 10,
-        "description": "汇总间隔（分钟）",
-        "hint": "【仅 window 模式】每隔多少分钟把积攒的消息批量总结推送一次。建议 5~30，默认 10。"
-      },
-      "max_context_messages": {
-        "type": "int",
-        "default": 50,
-        "description": "对话窗口最大条数",
-        "hint": "【仅 window 模式】送给 LLM 的对话上下文最多多少条。超出时以目标 QQ 为中心截断。默认 50。"
-      },
-      "alert_admin_qqs": {
-        "type": "list",
-        "description": "预警推送目标 QQ",
-        "default": [],
-        "hint": "预警私聊发给谁。空=复用管理员 QQ（AstrBot 超管 + admin_notify.extra_admin_qq）；填了=只发给这些 QQ。",
-        "items": {
-          "type": "string"
-        }
-      },
-      "enable_cross_group": {
-        "type": "bool",
-        "default": false,
-        "description": "跨群聚合简报",
-        "hint": "【仅 window 模式】开启后，flush 时合并所有监控群的消息，让 LLM 按话题聚类，输出一份跨群简报（去重、标注来源群、合并重复话题）。关闭=每群独立推送。"
-      },
-      "cooldown_seconds": {
-        "type": "int",
-        "default": 60,
-        "description": "推送冷却（秒）",
-        "hint": "【仅 keyword 模式】同一发送者@同一群的最小推送间隔，防刷屏。0=不冷却。API Key 等关键命中不受此限制。默认 60。"
-      },
-      "dedup_minutes": {
-        "type": "int",
-        "default": 30,
-        "description": "内容去重窗口（分钟）",
-        "hint": "内容相似的消息在 N 分钟内只推一次，防跨群重复轰炸。0=不去重。默认 30。"
-      },
-      "keyword_batch_seconds": {
-        "type": "int",
-        "default": 60,
-        "description": "关键词批量合并间隔（秒）",
-        "hint": "【仅 keyword 模式】normal 优先级（资源链接、自定义关键词等）的命中不立即推，攒 N 秒合并成一条推送。0=不合并（立即推）。API Key 等关键命中不受此限制。默认 60。"
-      }
-    }
-  },
-  "prompts": {
-    "description": "提示词模板（话题 + 信息差，可自定义）",
-    "type": "object",
-    "hint": "定制版只保留有价值信息相关提示词：话题分析、信息差/商机/干货提取。可按群聊内容自行优化。",
-    "items": {
-      "topic_analysis_prompts": {
-        "description": "有价值话题分析提示词",
+    "admin_notify": {
+        "description": "管理员私聊推送（情报及时送达）",
         "type": "object",
-        "hint": "提取有讨论价值话题的提示词。可自定义修改，保留变量 ${max_topics} 和 ${messages_text}，JSON 示例请用双花括号 {{ ... }}。",
+        "hint": "开启后报告只私聊管理员、不发群。管理员 QQ 读取 AstrBot 超级管理员，也可额外补充。注意：bot 与管理员需互为好友。",
         "items": {
-          "topic_prompt": {
-            "description": "默认话题分析提示词",
-            "type": "text",
-            "editor_mode": true,
-            "editor_language": "markdown",
-            "default": "请分析以下群聊记录，提取最多 **${max_topics}** 个**有讨论价值的话题**。聚焦于有信息量、有深度、有结论的讨论，忽略纯闲聊。\n\n## 话题筛选优先级（从高到低）：\n\n1. **有价值的信息讨论**：涉及商机、资源、技术、行业动态等有信息量的话题\n2. **有深度的问题探讨**：有人提出问题并引发了有质量的讨论、解答\n3. **有结论的讨论**：达成了某种共识、结论或行动方案\n4. **多方参与的热烈讨论**：多人参与、信息密度高的话题\n\n## 对于每个话题，请提供：\n\n1. **话题名称**（突出主题内容，简明扼要，控制在 10 字以内）\n2. **主要参与者用户ID**（最多 5 人，按参与度排序）\n3. **话题详细描述**（包含关键信息、讨论要点和结论）\n\n## 注意事项：\n\n- **优先选择有信息量、有价值的讨论**，忽略纯灌水、表情包、闲聊寒暄\n- 对于有价值的信息点，详细讲讲，让读者能 get 到讨论的深度和价值\n- 明确指出\"谁说了什么\"，体现信息来源\n- 如果话题有明确结论或共识，务必在描述中体现\n- **用户引用**：描述中提到用户时用 `[用户ID]` 格式（例如 `[123456]`），不要只写昵称\n- 如果消息太少或没有有价值的话题，返回空数组 []\n\n群聊记录格式: [HH:MM] [用户ID]: 消息内容\n\n群聊记录：\n${messages_text}\n\n---\n\n## 重要：必须返回标准 JSON 格式\n\n1. 只使用英文双引号 `\"`，不要用中文引号\n2. 字符串中的引号必须转义为 `\\\"`\n3. 不要在 JSON 外添加任何文字说明\n\n### 返回格式示例：\n\n```json\n[\n  {{\n    \"topic\": \"话题名称\",\n    \"contributors\": [\"123456789\", \"987654321\"],\n    \"detail\": \"话题详细描述，包含讨论内容、关键信息和结论。提及用户时用 [用户ID] 格式。\"\n  }}\n]\n```\n\n**注意**：返回纯 JSON，不要包含 markdown 代码块标记。"
-          }
+            "enable_admin_notify": {
+                "type": "bool",
+                "default": true,
+                "description": "开启管理员私聊通知",
+                "hint": "定制版默认开启。开启=定时报告只私聊管理员、不发群；关闭=原行为（发群）。"
+            },
+            "extra_admin_qq": {
+                "type": "list",
+                "default": [],
+                "description": "额外管理员 QQ（选填）",
+                "hint": "除了 AstrBot 超级管理员外，还想额外接收报告的 QQ 号。填纯数字 QQ 号，例如 [\"123456\", \"789012\"]。",
+                "items": {
+                    "type": "string"
+                }
+            }
         }
-      },
-      "golden_quote_analysis_prompts": {
-        "description": "信息差/商机/干货提取提示词",
+    },
+    "message_monitor": {
+        "description": "实时消息监控（盯人预警·整窗汇总）",
         "type": "object",
-        "hint": "提取有价值信息的提示词。可自定义修改，保留变量 ${max_golden_quotes} 和 ${messages_text}，JSON 示例请用双花括号 {{ ... }}。",
+        "hint": "实时监听监控群的消息，发现有价值信息立即/定时推给你。两种模式可选：keyword（关键词即时——任何人发命中关键词的消息立刻推，适合盯全群），window（整窗汇总——攒 X 分钟让 LLM 在完整上下文里提取目标 QQ 价值信息，适合盯特定人）。需要 bot 与推送目标 QQ 互为好友。",
         "items": {
-          "golden_quote_v2_prompt": {
-            "description": "信息差/商机提取提示词（定制版）",
-            "type": "text",
-            "editor_mode": true,
-            "editor_language": "markdown",
-            "default": "请从以下群聊记录中提取 **${max_golden_quotes}** 条最有价值的信息（信息差/商机/干货）。\n\n## 价值标准（按优先级从高到低）：\n\n1. **搞钱商机**：项目、副业、变现思路、套利机会、合作机会、赚钱路子\n2. **资源干货**：好用的工具、教程、资料、渠道、产品推荐、省钱技巧\n3. **行业情报**：行业内幕、一手消息、趋势判断、稀缺信息、政策变化\n4. **认知差**：能让人\"原来还可以这样\"的思维洞见、经验总结、方法论\n\n## 对于每条信息，请提供：\n\n1. **原文内容**（完整保留发言细节，不要改写）\n2. **发言人用户ID**（必须严格使用消息记录中提供的 [用户ID]）\n3. **价值说明**（具体说明这条信息的价值点：是商机/资源/情报/认知？为什么有用）\n\n## 严格约束：\n\n- **必须忽略**：闲聊灌水、表情包、单纯玩梗、网络热词堆砌、无意义的情绪宣泄\n- 优先筛选**价值密度最高、最可行动**的内容\n- 如果整段聊天确实没有有价值的信息，返回空数组 []（宁缺毋滥，不要硬凑）\n- **用户引用**：在价值说明（reason）中提到具体用户时，使用 `[用户ID]` 格式（例如 `[123456]`），不要只写昵称，系统会自动渲染头像\n- **身份对齐**：返回的 `sender` 字段必须是 `[用户ID]` 格式（例如 `[123456]`）\n\n## 群聊记录格式: [HH:MM] [用户ID]: 消息内容\n\n## 群聊记录：\n\n${messages_text}\n\n---\n\n### 返回格式示例：\n\n```json\n[\n  {{\n    \"content\": \"原文内容\",\n    \"sender\": \"[123456789]\",\n    \"reason\": \"这是一条搞钱商机：[123456789] 分享了xxx变现思路，价值在于...\"\n  }}\n]\n```\n\n**注意**：返回的内容必须是纯 JSON，不要包含 markdown 代码块标记或其他格式。"
-          }
+            "enable_monitor": {
+                "type": "bool",
+                "default": false,
+                "description": "开启实时消息监控",
+                "hint": "开启后，按 monitor_mode 选择的模式工作。关闭=不盯。"
+            },
+            "monitor_mode": {
+                "type": "string",
+                "description": "监控模式",
+                "options": [
+                    "keyword",
+                    "window"
+                ],
+                "default": "window",
+                "hint": "keyword=关键词即时：任何人发的消息命中关键词/正则就立即推送（快，适合盯全群的关键词如 API key/资源）。window=整窗汇总：攒 X 分钟的消息让 LLM 在完整上下文里提取目标 QQ 价值信息（准，适合盯特定人）。"
+            },
+            "monitored_qqs": {
+                "type": "list",
+                "description": "要盯的 QQ 号",
+                "default": [],
+                "hint": "要盯的 QQ 号（纯数字）。window 模式必填——LLM 重点提取这些人的发言。keyword 模式下可选——填了则只检测这些人的消息，空=检测群里所有人。",
+                "items": {
+                    "type": "string"
+                }
+            },
+            "monitored_groups": {
+                "type": "list",
+                "description": "监控群列表（必填）",
+                "default": [],
+                "hint": "要监控的群号（纯数字）。必填——插件会攒这些群里的【所有人】消息作为上下文，让 LLM 在完整对话中判断目标 QQ 的发言是否有价值。空=不盯任何群。",
+                "items": {
+                    "type": "string"
+                }
+            },
+            "extra_keywords": {
+                "type": "list",
+                "description": "自定义关键词",
+                "default": [],
+                "hint": "自定义关键词列表。keyword 模式下任何人发的消息命中这些词就推送；window 模式下会提示 LLM 特别关注。例如 [\"破解\", \"激活码\", \"资源\"]。",
+                "items": {
+                    "type": "string"
+                }
+            },
+            "use_llm_confirm": {
+                "type": "bool",
+                "default": true,
+                "description": "用 LLM 二次确认",
+                "hint": "keyword 模式：命中关键词后用 LLM 二次确认是否真有用（减少误推）。window 模式：每个批次用 LLM 提取有价值信息。关闭=省 token 但噪音多。LLM 不可用时自动降级。"
+            },
+            "flush_interval": {
+                "type": "int",
+                "default": 10,
+                "description": "汇总间隔（分钟）",
+                "hint": "【仅 window 模式】每隔多少分钟把积攒的消息批量总结推送一次。建议 5~30，默认 10。"
+            },
+            "max_context_messages": {
+                "type": "int",
+                "default": 50,
+                "description": "对话窗口最大条数",
+                "hint": "【仅 window 模式】送给 LLM 的对话上下文最多多少条。超出时以目标 QQ 为中心截断。默认 50。"
+            },
+            "alert_admin_qqs": {
+                "type": "list",
+                "description": "预警推送目标 QQ",
+                "default": [],
+                "hint": "预警私聊发给谁。空=复用管理员 QQ（AstrBot 超管 + admin_notify.extra_admin_qq）；填了=只发给这些 QQ。",
+                "items": {
+                    "type": "string"
+                }
+            },
+            "enable_cross_group": {
+                "type": "bool",
+                "default": false,
+                "description": "跨群聚合简报",
+                "hint": "【仅 window 模式】开启后，flush 时合并所有监控群的消息，让 LLM 按话题聚类，输出一份跨群简报（去重、标注来源群、合并重复话题）。关闭=每群独立推送。"
+            },
+            "cooldown_seconds": {
+                "type": "int",
+                "default": 60,
+                "description": "推送冷却（秒）",
+                "hint": "【仅 keyword 模式】同一发送者@同一群的最小推送间隔，防刷屏。0=不冷却。API Key 等关键命中不受此限制。默认 60。"
+            },
+            "dedup_minutes": {
+                "type": "int",
+                "default": 30,
+                "description": "内容去重窗口（分钟）",
+                "hint": "内容相似的消息在 N 分钟内只推一次，防跨群重复轰炸。0=不去重。默认 30。"
+            },
+            "keyword_batch_seconds": {
+                "type": "int",
+                "default": 60,
+                "description": "关键词批量合并间隔（秒）",
+                "hint": "【仅 keyword 模式】normal 优先级（资源链接、自定义关键词等）的命中不立即推，攒 N 秒合并成一条推送。0=不合并（立即推）。API Key 等关键命中不受此限制。默认 60。"
+            }
         }
-      }
-    }
-  },
-  "analysis_features": {
-    "description": "信息分析功能开关",
-    "type": "object",
-    "hint": "定制版聚焦有价值信息：话题 + 信息差/干货。用户称号/MBTI、聊天质量锐评等娱乐功能已移除。",
-    "items": {
-      "topic_analysis_enabled": {
-        "type": "bool",
-        "description": "启用有价值话题分析",
-        "default": true,
-        "hint": "使用 LLM 提取有信息量、有深度的讨论话题"
-      },
-      "golden_quote_analysis_enabled": {
-        "type": "bool",
-        "description": "启用信息差/干货提取",
-        "default": true,
-        "hint": "使用 LLM 提取商机、资源、情报、认知差等可行动信息"
-      },
-      "max_topics": {
-        "type": "int",
-        "description": "最大话题数量",
-        "default": 5,
-        "hint": "报告中最多展示的话题数"
-      },
-      "max_golden_quotes": {
-        "type": "int",
-        "description": "最大信息差条目数",
-        "default": 8,
-        "hint": "报告中最多展示的信息差/干货条数"
-      },
-      "keep_original_persona": {
-        "description": "继承会话人设风格",
-        "type": "bool",
-        "default": false,
-        "hint": "开启后尽量沿用当前会话人设口吻生成分析文案（非娱乐画像功能）。"
-      },
-      "use_plugin_specific_persona": {
-        "description": "强制使用插件指定人格",
-        "type": "bool",
-        "default": false,
-        "hint": "开启后强制使用下方指定人格 ID，忽略群人设。适合统一成「情报记录员」风格。"
-      },
-      "plugin_specific_persona_id": {
-        "description": "插件指定人格 ID",
-        "type": "string",
-        "_special": "select_persona",
-        "default": "",
-        "hint": "当“强制使用插件指定人格”开启时，在此处选择系统中已定义的人设。若此处未选择，则仍会尝试识别全局默认人格。"
-      }
-    }
-  },
-  "auto_analysis": {
-    "description": "定时分析设置",
-    "type": "object",
-    "hint": "配置每日自动分析的时间点和目标群聊范围。只有先通过基础群权限的群，才会在这里继续判断。",
-    "items": {
-      "auto_analysis_time": {
-        "type": "list",
-        "description": "自动分析时间列表",
-        "default": [
-          "23:00"
-        ],
-        "hint": "每天几点自动出报告，格式是 HH:MM。可填多个时间，例如 [\"09:00\", \"21:30\"]。",
+    },
+    "prompts": {
+        "description": "提示词模板（话题 + 信息差，可自定义）",
+        "type": "object",
+        "hint": "定制版只保留有价值信息相关提示词：话题分析、信息差/商机/干货提取。可按群聊内容自行优化。",
         "items": {
-          "type": "string"
+            "topic_analysis_prompts": {
+                "description": "有价值话题分析提示词",
+                "type": "object",
+                "hint": "提取有讨论价值话题的提示词。可自定义修改，保留变量 ${max_topics} 和 ${messages_text}，JSON 示例请用双花括号 {{ ... }}。",
+                "items": {
+                    "topic_prompt": {
+                        "description": "默认话题分析提示词",
+                        "type": "text",
+                        "editor_mode": true,
+                        "editor_language": "markdown",
+                        "default": "请分析以下群聊记录，提取最多 **${max_topics}** 个**有讨论价值的话题**。聚焦于有信息量、有深度、有结论的讨论，忽略纯闲聊。\n\n## 话题筛选优先级（从高到低）：\n\n1. **有价值的信息讨论**：涉及商机、资源、技术、行业动态等有信息量的话题\n2. **有深度的问题探讨**：有人提出问题并引发了有质量的讨论、解答\n3. **有结论的讨论**：达成了某种共识、结论或行动方案\n4. **多方参与的热烈讨论**：多人参与、信息密度高的话题\n\n## 对于每个话题，请提供：\n\n1. **话题名称**（突出主题内容，简明扼要，控制在 10 字以内）\n2. **主要参与者用户ID**（最多 5 人，按参与度排序）\n3. **话题详细描述**（包含关键信息、讨论要点和结论）\n\n## 注意事项：\n\n- **优先选择有信息量、有价值的讨论**，忽略纯灌水、表情包、闲聊寒暄\n- 对于有价值的信息点，详细讲讲，让读者能 get 到讨论的深度和价值\n- 明确指出\"谁说了什么\"，体现信息来源\n- 如果话题有明确结论或共识，务必在描述中体现\n- **用户引用**：描述中提到用户时用 `[用户ID]` 格式（例如 `[123456]`），不要只写昵称\n- 如果消息太少或没有有价值的话题，返回空数组 []\n\n群聊记录格式: [HH:MM] [用户ID]: 消息内容\n\n群聊记录：\n${messages_text}\n\n---\n\n## 重要：必须返回标准 JSON 格式\n\n1. 只使用英文双引号 `\"`，不要用中文引号\n2. 字符串中的引号必须转义为 `\\\"`\n3. 不要在 JSON 外添加任何文字说明\n\n### 返回格式示例：\n\n```json\n[\n  {{\n    \"topic\": \"话题名称\",\n    \"contributors\": [\"123456789\", \"987654321\"],\n    \"detail\": \"话题详细描述，包含讨论内容、关键信息和结论。提及用户时用 [用户ID] 格式。\"\n  }}\n]\n```\n\n**注意**：返回纯 JSON，不要包含 markdown 代码块标记。"
+                    }
+                }
+            },
+            "golden_quote_analysis_prompts": {
+                "description": "信息差/商机/干货提取提示词",
+                "type": "object",
+                "hint": "提取有价值信息的提示词。可自定义修改，保留变量 ${max_golden_quotes} 和 ${messages_text}，JSON 示例请用双花括号 {{ ... }}。",
+                "items": {
+                    "golden_quote_v2_prompt": {
+                        "description": "信息差/商机提取提示词（定制版）",
+                        "type": "text",
+                        "editor_mode": true,
+                        "editor_language": "markdown",
+                        "default": "请从以下群聊记录中提取 **${max_golden_quotes}** 条最有价值的信息（信息差/商机/干货）。\n\n## 价值标准（按优先级从高到低）：\n\n1. **搞钱商机**：项目、副业、变现思路、套利机会、合作机会、赚钱路子\n2. **资源干货**：好用的工具、教程、资料、渠道、产品推荐、省钱技巧\n3. **行业情报**：行业内幕、一手消息、趋势判断、稀缺信息、政策变化\n4. **认知差**：能让人\"原来还可以这样\"的思维洞见、经验总结、方法论\n\n## 对于每条信息，请提供：\n\n1. **原文内容**（完整保留发言细节，不要改写）\n2. **发言人用户ID**（必须严格使用消息记录中提供的 [用户ID]）\n3. **价值说明**（具体说明这条信息的价值点：是商机/资源/情报/认知？为什么有用）\n\n## 严格约束：\n\n- **必须忽略**：闲聊灌水、表情包、单纯玩梗、网络热词堆砌、无意义的情绪宣泄\n- 优先筛选**价值密度最高、最可行动**的内容\n- 如果整段聊天确实没有有价值的信息，返回空数组 []（宁缺毋滥，不要硬凑）\n- **用户引用**：在价值说明（reason）中提到具体用户时，使用 `[用户ID]` 格式（例如 `[123456]`），不要只写昵称，系统会自动渲染头像\n- **身份对齐**：返回的 `sender` 字段必须是 `[用户ID]` 格式（例如 `[123456]`）\n\n## 群聊记录格式: [HH:MM] [用户ID]: 消息内容\n\n## 群聊记录：\n\n${messages_text}\n\n---\n\n### 返回格式示例：\n\n```json\n[\n  {{\n    \"content\": \"原文内容\",\n    \"sender\": \"[123456789]\",\n    \"reason\": \"这是一条搞钱商机：[123456789] 分享了xxx变现思路，价值在于...\"\n  }}\n]\n```\n\n**注意**：返回的内容必须是纯 JSON，不要包含 markdown 代码块标记或其他格式。"
+                    }
+                }
+            }
         }
-      },
-      "scheduled_group_list_mode": {
-        "type": "string",
-        "description": "定时分析名单模式",
-        "options": [
-          "whitelist",
-          "blacklist"
-        ],
-        "default": "whitelist",
-        "hint": "定时任务要作用到哪些群。whitelist=只跑下面列表里的群；blacklist=除了下面列表，其他都跑。注意：这里只对“已通过基础群权限”的群生效。"
-      },
-      "scheduled_group_list": {
-        "type": "list",
-        "description": "定时分析群列表",
-        "default": [],
-        "hint": "定时任务群列表。示例1：mode=whitelist + [\"onebot:GroupMessage:123456\"] => 只跑这个群。示例2：mode=blacklist + [\"onebot:GroupMessage:123456\"] => 这个群不跑，其他群跑。注意：whitelist + 空列表 = 不会开启定时任务。即使某群在增量名单里，只要不在定时白名单里，也不会自动触发。",
+    },
+    "analysis_features": {
+        "description": "信息分析功能开关",
+        "type": "object",
+        "hint": "定制版聚焦有价值信息：话题 + 信息差/干货。用户称号/MBTI、聊天质量锐评等娱乐功能已移除。",
         "items": {
-          "type": "string"
+            "topic_analysis_enabled": {
+                "type": "bool",
+                "description": "启用有价值话题分析",
+                "default": true,
+                "hint": "使用 LLM 提取有信息量、有深度的讨论话题"
+            },
+            "golden_quote_analysis_enabled": {
+                "type": "bool",
+                "description": "启用信息差/干货提取",
+                "default": true,
+                "hint": "使用 LLM 提取商机、资源、情报、认知差等可行动信息"
+            },
+            "max_topics": {
+                "type": "int",
+                "description": "最大话题数量",
+                "default": 5,
+                "hint": "报告中最多展示的话题数"
+            },
+            "max_golden_quotes": {
+                "type": "int",
+                "description": "最大信息差条目数",
+                "default": 8,
+                "hint": "报告中最多展示的信息差/干货条数"
+            },
+            "keep_original_persona": {
+                "description": "继承会话人设风格",
+                "type": "bool",
+                "default": false,
+                "hint": "开启后尽量沿用当前会话人设口吻生成分析文案（非娱乐画像功能）。"
+            },
+            "use_plugin_specific_persona": {
+                "description": "强制使用插件指定人格",
+                "type": "bool",
+                "default": false,
+                "hint": "开启后强制使用下方指定人格 ID，忽略群人设。适合统一成「情报记录员」风格。"
+            },
+            "plugin_specific_persona_id": {
+                "description": "插件指定人格 ID",
+                "type": "string",
+                "_special": "select_persona",
+                "default": "",
+                "hint": "当“强制使用插件指定人格”开启时，在此处选择系统中已定义的人设。若此处未选择，则仍会尝试识别全局默认人格。"
+            }
         }
-      }
-    }
-  },
-  "basic": {
-    "description": "基础设置",
-    "type": "object",
-    "hint": "群权限、消息量、输出格式与报告模板。输出方式（图片/文本/HTML）与模板风格仍可自定义。",
-    "items": {
-      "group_list_mode": {
-        "description": "群聊权限模式",
-        "type": "string",
-        "options": [
-          "whitelist",
-          "blacklist",
-          "none"
-        ],
-        "default": "whitelist",
-        "hint": "定制版默认 whitelist（单群监控更安全）。先决定“哪些群可以用这个插件”。这是第一道门槛：不通过这里，后面的定时/增量都不会触发。whitelist=只允许列表里的群；blacklist=屏蔽列表里的群；none=所有群都可以。示例：whitelist + [\"onebot:GroupMessage:123456\"] 表示只有这个群能用。注意：whitelist + 空列表 = 没有任何群可用，需先填 group_list。"
-      },
-      "group_list": {
-        "type": "list",
-        "description": "群组白/黑名单列表",
-        "default": [],
-        "hint": "要填的群列表。可以填完整会话ID（如 onebot:GroupMessage:123456）或只填群号（如 123456）。新手建议优先填完整会话ID，更不容易填错。可用 /sid 获取当前会话ID。",
+    },
+    "auto_analysis": {
+        "description": "定时分析设置",
+        "type": "object",
+        "hint": "配置每日自动分析的时间点和目标群聊范围。只有先通过基础群权限的群，才会在这里继续判断。",
         "items": {
-          "type": "string"
+            "auto_analysis_time": {
+                "type": "list",
+                "description": "自动分析时间列表",
+                "default": [
+                    "23:00"
+                ],
+                "hint": "每天几点自动出报告，格式是 HH:MM。可填多个时间，例如 [\"09:00\", \"21:30\"]。",
+                "items": {
+                    "type": "string"
+                }
+            },
+            "scheduled_group_list_mode": {
+                "type": "string",
+                "description": "定时分析名单模式",
+                "options": [
+                    "whitelist",
+                    "blacklist"
+                ],
+                "default": "whitelist",
+                "hint": "定时任务要作用到哪些群。whitelist=只跑下面列表里的群；blacklist=除了下面列表，其他都跑。注意：这里只对“已通过基础群权限”的群生效。"
+            },
+            "scheduled_group_list": {
+                "type": "list",
+                "description": "定时分析群列表",
+                "default": [],
+                "hint": "定时任务群列表。示例1：mode=whitelist + [\"onebot:GroupMessage:123456\"] => 只跑这个群。示例2：mode=blacklist + [\"onebot:GroupMessage:123456\"] => 这个群不跑，其他群跑。注意：whitelist + 空列表 = 不会开启定时任务。即使某群在增量名单里，只要不在定时白名单里，也不会自动触发。",
+                "items": {
+                    "type": "string"
+                }
+            }
         }
-      },
-      "analysis_days": {
-        "type": "int",
-        "description": "默认分析天数",
-        "default": 1,
-        "hint": "默认分析最近几天的消息，增量分析也基于此数据保存分析情况"
-      },
-      "max_messages": {
-        "type": "int",
-        "description": "单次分析的获取最大消息条数基准",
-        "default": 1000,
-        "hint": "单次分析的获取最大消息条数基准值，如果当天群聊消息过多，已经获取到足够的消息(达到 max_messages)，停止获取，获取到的消息数量是最新一次获取到的超过 max_messages 的消息数量，建议500-2000"
-      },
-      "min_messages_threshold": {
-        "type": "int",
-        "description": "最小消息数阈值",
-        "default": 50,
-        "hint": "进行分析所需的最小消息数量。定制版默认 50，避免安静情报群整天不出报告。"
-      },
-      "bot_self_ids": {
-        "type": "list",
-        "description": "群分析时屏蔽的用户ID列表",
-        "default": [],
-        "hint": "填写后可启用自动分析功能。可以填写用于自动分析的机器人 ID（在不同平台上可能是数字或字符串）、多消息平台 ID、不希望出现于群分析中的其他人的 ID 等。",
+    },
+    "basic": {
+        "description": "基础设置",
+        "type": "object",
+        "hint": "群权限、消息量、输出格式与报告模板。输出方式（图片/文本/HTML）与模板风格仍可自定义。",
         "items": {
-          "type": "string"
+            "group_list_mode": {
+                "description": "群聊权限模式",
+                "type": "string",
+                "options": [
+                    "whitelist",
+                    "blacklist",
+                    "none"
+                ],
+                "default": "whitelist",
+                "hint": "定制版默认 whitelist（单群监控更安全）。先决定“哪些群可以用这个插件”。这是第一道门槛：不通过这里，后面的定时/增量都不会触发。whitelist=只允许列表里的群；blacklist=屏蔽列表里的群；none=所有群都可以。示例：whitelist + [\"onebot:GroupMessage:123456\"] 表示只有这个群能用。注意：whitelist + 空列表 = 没有任何群可用，需先填 group_list。"
+            },
+            "group_list": {
+                "type": "list",
+                "description": "群组白/黑名单列表",
+                "default": [],
+                "hint": "要填的群列表。可以填完整会话ID（如 onebot:GroupMessage:123456）或只填群号（如 123456）。新手建议优先填完整会话ID，更不容易填错。可用 /sid 获取当前会话ID。",
+                "items": {
+                    "type": "string"
+                }
+            },
+            "analysis_days": {
+                "type": "int",
+                "description": "默认分析天数",
+                "default": 1,
+                "hint": "默认分析最近几天的消息，增量分析也基于此数据保存分析情况"
+            },
+            "max_messages": {
+                "type": "int",
+                "description": "单次分析的获取最大消息条数基准",
+                "default": 1000,
+                "hint": "单次分析的获取最大消息条数基准值，如果当天群聊消息过多，已经获取到足够的消息(达到 max_messages)，停止获取，获取到的消息数量是最新一次获取到的超过 max_messages 的消息数量，建议500-2000"
+            },
+            "min_messages_threshold": {
+                "type": "int",
+                "description": "最小消息数阈值",
+                "default": 50,
+                "hint": "进行分析所需的最小消息数量。定制版默认 50，避免安静情报群整天不出报告。"
+            },
+            "bot_self_ids": {
+                "type": "list",
+                "description": "群分析时屏蔽的用户ID列表",
+                "default": [],
+                "hint": "填写后可启用自动分析功能。可以填写用于自动分析的机器人 ID（在不同平台上可能是数字或字符串）、多消息平台 ID、不希望出现于群分析中的其他人的 ID 等。",
+                "items": {
+                    "type": "string"
+                }
+            },
+            "enable_user_card": {
+                "type": "bool",
+                "description": "使用用户群名片",
+                "default": true,
+                "hint": "在分析中优先使用用户的群名片作为昵称显示"
+            },
+            "output_format": {
+                "type": "string",
+                "description": "输出格式",
+                "options": [
+                    "image",
+                    "text",
+                    "html"
+                ],
+                "default": "image",
+                "hint": "报告输出方式：image（图片）、text（纯文本）、html（网页）。管理员私聊模式下优先图片，失败回退文本。"
+            },
+            "report_template": {
+                "type": "string",
+                "description": "报告模板",
+                "options": [
+                    "ATRI",
+                    "scrapbook",
+                    "retro_futurism",
+                    "HatsuneMiku",
+                    "hack",
+                    "spring_festival",
+                    "simple",
+                    "format"
+                ],
+                "default": "simple",
+                "hint": "图片/HTML 报告使用的模板风格，可按喜好选择。不影响信息提取逻辑。"
+            },
+            "debug_mode": {
+                "type": "bool",
+                "description": "调试模式（建议关闭）",
+                "default": false,
+                "hint": "启用后，会在插件数据目录下的 debug_data 目录中保存每次分析的平台 API 原始历史消息和 Prompt 原文，用于调试和优化提示词。"
+            },
+            "enable_base64_image": {
+                "type": "bool",
+                "description": "图片传输使用 Base64 编码",
+                "default": true,
+                "hint": "启用后图片会被转为 Base64 编码传输。关闭后将直接传递文件路径或 URL 给 OneBot 实现端，适用于 go-cqhttp、Lagrange 等支持本地路径的实现，可降低内存占用。"
+            },
+            "enable_analysis_reply": {
+                "type": "bool",
+                "description": "发送文本/表情回复",
+                "default": false,
+                "hint": "开启后，/群分析 将通过发送文本消息提示进度；关闭（默认）则使用表情回应。"
+            }
         }
-      },
-      "enable_user_card": {
-        "type": "bool",
-        "description": "使用用户群名片",
-        "default": true,
-        "hint": "在分析中优先使用用户的群名片作为昵称显示"
-      },
-      "output_format": {
-        "type": "string",
-        "description": "输出格式",
-        "options": [
-          "image",
-          "text",
-          "html"
-        ],
-        "default": "image",
-        "hint": "报告输出方式：image（图片）、text（纯文本）、html（网页）。管理员私聊模式下优先图片，失败回退文本。"
-      },
-      "report_template": {
-        "type": "string",
-        "description": "报告模板",
-        "options": [
-          "ATRI",
-          "scrapbook",
-          "retro_futurism",
-          "HatsuneMiku",
-          "hack",
-          "spring_festival",
-          "simple",
-          "format"
-        ],
-        "default": "simple",
-        "hint": "图片/HTML 报告使用的模板风格，可按喜好选择。不影响信息提取逻辑。"
-      },
-      "debug_mode": {
-        "type": "bool",
-        "description": "调试模式（建议关闭）",
-        "default": false,
-        "hint": "启用后，会在插件数据目录下的 debug_data 目录中保存每次分析的平台 API 原始历史消息和 Prompt 原文，用于调试和优化提示词。"
-      },
-      "enable_base64_image": {
-        "type": "bool",
-        "description": "图片传输使用 Base64 编码",
-        "default": true,
-        "hint": "启用后图片会被转为 Base64 编码传输。关闭后将直接传递文件路径或 URL 给 OneBot 实现端，适用于 go-cqhttp、Lagrange 等支持本地路径的实现，可降低内存占用。"
-      },
-      "enable_analysis_reply": {
-        "type": "bool",
-        "description": "发送文本/表情回复",
-        "default": false,
-        "hint": "开启后，/群分析 将通过发送文本消息提示进度；关闭（默认）则使用表情回应。"
-      }
+    },
+    "llm": {
+        "description": "LLM 设置",
+        "type": "object",
+        "hint": "大语言模型相关配置，包括 Provider 选择、重试策略和 Token 限制",
+        "items": {
+            "llm_provider_id": {
+                "type": "string",
+                "description": "LLM Provider ID（用于所有分析任务）",
+                "_special": "select_provider",
+                "default": "",
+                "hint": "选择用于群聊分析的 LLM Provider。留空则使用当前会话的默认 Provider"
+            },
+            "topic_provider_id": {
+                "type": "string",
+                "description": "话题分析专用 Provider ID",
+                "_special": "select_provider",
+                "default": "",
+                "hint": "专门用于话题分析的 Provider。留空则使用主 LLM Provider"
+            },
+            "golden_quote_provider_id": {
+                "type": "string",
+                "description": "信息差提取专用 Provider ID",
+                "_special": "select_provider",
+                "default": "",
+                "hint": "专门用于信息差/干货提取的 Provider。留空则使用主 LLM Provider"
+            },
+            "llm_retries": {
+                "type": "int",
+                "description": "LLM 请求重试次数",
+                "default": 2,
+                "hint": "当请求超时或失败时自动重试的次数，建议设置为1~3之间。"
+            },
+            "llm_backoff": {
+                "type": "int",
+                "description": "LLM 请求重试退避基值（秒）",
+                "default": 2,
+                "hint": "重试之间的基准等待时间（秒）。实际等待时间会随尝试次数指数增长，并加入少量随机抖动；当专用 Provider 失败后，会继续按队列尝试默认 Provider。"
+            },
+            "enable_streaming_llm_call": {
+                "type": "bool",
+                "description": "启用流式 LLM 调用",
+                "default": false,
+                "hint": "默认关闭，使用原有非流式调用方式。开启后，插件将使用 AstrBot Provider 的流式接口并聚合结果，适用于仅支持 stream=true 的服务。"
+            }
+        }
+    },
+    "performance": {
+        "description": "并发限流设置",
+        "type": "object",
+        "hint": "控制插件运行时的各项并发强度。合理的配置可以保护您的服务器不宕机、API 不被封禁。",
+        "items": {
+            "max_concurrent_groups": {
+                "type": "int",
+                "description": "最大活跃任务数（任务总闸）",
+                "default": 2,
+                "hint": "限制同时有多少个群聊分析任务正在进行。主要用于【保护服务器内存和 IO】，防止瞬间读取过多群聊记录导致程序崩溃（OOM）。"
+            },
+            "max_concurrent_llm": {
+                "type": "int",
+                "description": "最大 LLM 请求并发数（API 闸口）",
+                "default": 3,
+                "hint": "限制同时发起的 AI 分析请求数量。主要用于【遵守 API 频率限制（RPM）】，避免因为请求过快导致 API 被封号或报错。"
+            },
+            "max_concurrent_t2i": {
+                "type": "int",
+                "description": "最大 T2I渲染并发数",
+                "default": 1,
+                "hint": "限制同时开启的 T2I 渲染进程数。"
+            },
+            "stagger_seconds": {
+                "type": "int",
+                "description": "多群分析交错间隔（秒）",
+                "default": 30,
+                "hint": "当同时启动多个群组的定时分析任务时，每个任务之间的延迟间隔（秒），建议根据实际的 LLM 服务速度填写，过短可能导致请求堆积，过长则分析效率降低。"
+            }
+        }
+    },
+    "t2i_rendering": {
+        "description": "图片渲染策略",
+        "type": "object",
+        "hint": "配置 HTML 转图片的渲染参数。支持两轮尝试：第一轮优先保证质量，第二轮作为回退方案，建议使用更低的分辨率和质量以提高成功率。",
+        "items": {
+            "t2i_r1_type": {
+                "type": "string",
+                "description": "第一轮：图片格式",
+                "options": [
+                    "jpeg",
+                    "png"
+                ],
+                "default": "png",
+                "hint": "建议：PNG 格式无损但体积较大；JPEG 格式体积较小。"
+            },
+            "t2i_r1_quality": {
+                "type": "int",
+                "description": "第一轮：图片质量 (若为 JPEG)",
+                "default": 100,
+                "slider": {
+                    "min": 1,
+                    "max": 100,
+                    "step": 1
+                },
+                "hint": "仅对 JPEG 格式生效。建议 80-100。"
+            },
+            "t2i_r1_device_scale": {
+                "type": "string",
+                "description": "第一轮：分辨率等级",
+                "options": [
+                    "normal",
+                    "high",
+                    "ultra"
+                ],
+                "default": "ultra",
+                "hint": "影响图片清晰度。normal=1.0x, high=1.3x, ultra=1.8x。高质量日报建议 ultra。"
+            },
+            "t2i_r1_timeout": {
+                "type": "int",
+                "description": "第一轮：渲染超时 (ms)",
+                "default": 50000,
+                "slider": {
+                    "min": 30000,
+                    "max": 180000,
+                    "step": 5000
+                },
+                "hint": "单次渲染的最长等待时间。复杂页面建议调大。"
+            },
+            "t2i_r2_type": {
+                "type": "string",
+                "description": "第二轮 (回退)：图片格式",
+                "options": [
+                    "jpeg",
+                    "png"
+                ],
+                "default": "jpeg",
+                "hint": "回退策略建议使用 jpeg 以减少渲染压力。"
+            },
+            "t2i_r2_quality": {
+                "type": "int",
+                "description": "第二轮 (回退)：图片质量 (若为 JPEG)",
+                "default": 80,
+                "slider": {
+                    "min": 1,
+                    "max": 100,
+                    "step": 1
+                },
+                "hint": "仅对 JPEG 格式生效。可以设置较低值以确保生成成功。"
+            },
+            "t2i_r2_device_scale": {
+                "type": "string",
+                "description": "第二轮 (回退)：分辨率等级",
+                "options": [
+                    "normal",
+                    "high",
+                    "ultra"
+                ],
+                "default": "high",
+                "hint": "回退建议使用 high/normal 以降低复杂页面的内存消耗和超时概率。"
+            },
+            "t2i_r2_timeout": {
+                "type": "int",
+                "description": "第二轮 (回退)：渲染超时 (ms)",
+                "default": 100000,
+                "slider": {
+                    "min": 30000,
+                    "max": 180000,
+                    "step": 5000
+                },
+                "hint": "回退尝试通常针对复杂页面，建议设置更长的超时时间（如 100000ms+）。"
+            },
+            "t2i_font_source": {
+                "type": "string",
+                "description": "t2i 渲染环境切换",
+                "options": [
+                    "Mainland",
+                    "Overseas"
+                ],
+                "default": "Overseas",
+                "hint": "字体和静态资源的访问环境，内地（Mainland）、海外（Overseas），切换环境会自动应用下方对应的镜像站地址、语言标识(简体中文/繁体中文)及字体优先级。（实测 Overseas 也可以正常渲染简体中文）"
+            },
+            "t2i_mainland_google_fonts": {
+                "type": "string",
+                "description": "[内地] Google Fonts 镜像",
+                "default": "https://fonts.loli.net",
+                "hint": "内地环境下推荐使用 loli.net 或其他可访问镜像。"
+            },
+            "t2i_mainland_gstatic": {
+                "type": "string",
+                "description": "[内地] Gstatic 镜像",
+                "default": "https://gstatic.loli.net",
+                "hint": "内地环境下推荐使用 loli.net 或其他可访问镜像。"
+            },
+            "t2i_overseas_google_fonts": {
+                "type": "string",
+                "description": "[海外] Google Fonts 官方",
+                "default": "https://fonts.googleapis.com",
+                "hint": "海外环境通常直接使用官方地址即可。"
+            },
+            "t2i_overseas_gstatic": {
+                "type": "string",
+                "description": "[海外] Gstatic 官方",
+                "default": "https://fonts.gstatic.com",
+                "hint": "海外环境通常直接使用官方地址即可。"
+            }
+        }
+    },
+    "incremental": {
+        "description": "增量分析设置",
+        "type": "object",
+        "hint": "增量分析通过在活跃时段分步提取摘要，能显著提高分析深度和覆盖率。这里仅决定“已通过前两关的群”是走增量还是普通模式。",
+        "items": {
+            "incremental_group_list_mode": {
+                "type": "string",
+                "description": "增量分析名单模式",
+                "options": [
+                    "whitelist",
+                    "blacklist"
+                ],
+                "default": "whitelist",
+                "hint": "哪些群用“增量分析”。whitelist=只有列表里的群用增量；blacklist=除了列表外都用增量。没命中的群会走普通模式。注意：增量名单不负责放行群，只负责选模式。"
+            },
+            "incremental_group_list": {
+                "type": "list",
+                "description": "增量分析群列表",
+                "default": [],
+                "hint": "增量分析群列表。示例1：mode=whitelist + [\"onebot:GroupMessage:123456\"] => 只有这个群增量。示例2：mode=blacklist + [\"onebot:GroupMessage:123456\"] => 这个群不用增量，其他群用增量。注意：whitelist + 空列表 = 不启用增量。只有先通过基础群权限 + 定时名单的群，才会在这里判断。",
+                "items": {
+                    "type": "string"
+                }
+            },
+            "incremental_report_immediately": {
+                "type": "bool",
+                "description": "增量分析立即报告（调试用）",
+                "default": false,
+                "hint": "【调试功能】启用后，每次增量分析完成后都会立即生成并发送一份最终报告。仅建议在调试时开启，生产环境请保持关闭，否则会频繁打扰群友。"
+            },
+            "incremental_interval_minutes": {
+                "type": "int",
+                "description": "增量分析间隔（分钟）",
+                "default": 120,
+                "hint": "每隔多少分钟执行一次增量分析。建议根据群聊实际情况处理，间隔越短分析越精细但消耗更多 Token。"
+            },
+            "incremental_max_daily_analyses": {
+                "type": "int",
+                "description": "每日最大增量分析次数",
+                "default": 8,
+                "hint": "一天内最多执行多少次增量分析。达到上限后当天不再触发新的增量分析，但仍会在报告时间生成最终报告。建议4-12次。"
+            },
+            "incremental_safe_limit": {
+                "type": "int",
+                "description": "增量分析单次安全上限 (Safe Count)",
+                "default": 2000,
+                "hint": "增量分析模式下，当群聊极其活跃导致大量消息堆积时，插件单次回溯历史的最大消息条数。这同时也是为了防止特殊情况下无限回溯。即使没追到上次分析的断点，拉满此数值也会强制停止。建议 1000-5000。"
+            },
+            "incremental_min_messages": {
+                "type": "int",
+                "description": "增量分析最小消息数阈值",
+                "default": 300,
+                "hint": "当自上次分析以来的新消息数低于此阈值时，跳过本次增量分析以节省 Token。建议设置较大值，因为当获取到的消息不够时，最晚消息的游标不会更新，等消息累计足够后的增量分析会进行分析。"
+            },
+            "incremental_topics_per_batch": {
+                "type": "int",
+                "description": "单次增量提取话题数",
+                "default": 2,
+                "hint": "每次增量分析最多提取的话题数量。最终报告会汇总所有批次的话题。建议1-4。"
+            },
+            "incremental_quotes_per_batch": {
+                "type": "int",
+                "description": "单次增量提取金句数",
+                "default": 2,
+                "hint": "每次增量分析最多提取的金句数量。最终报告会汇总所有批次的金句。建议1-2。"
+            },
+            "incremental_active_start_hour": {
+                "type": "int",
+                "description": "增量分析活跃起始时段",
+                "default": 8,
+                "hint": "增量分析的活跃时段起始小时（24小时制）。如果目标群聊凌晨也活跃，建议设定的很早；在活跃时段之外不会触发增量分析，避免凌晨等低活跃时段浪费分析配额."
+            },
+            "incremental_active_end_hour": {
+                "type": "int",
+                "description": "增量分析活跃结束时段",
+                "default": 23,
+                "hint": "增量分析的活跃时段结束小时（24小时制）。超过此时段后不再触发增量分析。"
+            },
+            "incremental_stagger_seconds": {
+                "type": "int",
+                "description": "多群增量分析交错间隔（秒）",
+                "default": 2,
+                "hint": "当同时对多个群进行增量分析时，每个群之间的延迟间隔（秒），用于均匀分散 API 请求压力。"
+            },
+            "incremental_fallback_enabled": {
+                "type": "bool",
+                "description": "增量失败自动回退全量分析",
+                "default": true,
+                "hint": "建议开启。开启后，如果增量分析失败，会自动改用普通分析，避免当天没报告。"
+            }
+        }
+    },
+    "html": {
+        "description": "HTML 设置",
+        "type": "object",
+        "hint": "HTML 报告输出相关配置，包括外链 Base URL 和报告储存目录",
+        "items": {
+            "html_base_url": {
+                "type": "string",
+                "description": "外鏈 Base URL",
+                "default": "",
+                "hint": "用于生成外链的 Base URL（可留空）。如果设置了此项，发送报告时会在消息中提供超连結 (${BASE_URL}/${FILENAME})。留空则不提供外链。"
+            },
+            "html_output_dir": {
+                "type": "string",
+                "description": "报告储存目录",
+                "default": "",
+                "hint": "HTML报告文件的保存目录，用于存储生成的 HTML 文件和原始 JSON 数据。留空则自动使用插件数据目录（astrbot_path/data/plugin_data/astrbot_plugin_qq_group_daily_analysis/）下的 self_hosted_html_reports 目录。"
+            },
+            "html_only_url": {
+                "type": "bool",
+                "description": "仅发送外链",
+                "default": false,
+                "hint": "勾选后，若配置了外链 Base URL，则发送 HTML 报告时将只发送外链链接，不再发送HTML文件，若未勾选，将保持发送HTML文件。"
+            },
+            "html_filename_format": {
+                "type": "string",
+                "description": "HTML文件名格式",
+                "default": "群聊分析报告_${group_id}_${date}_${ulid}.html",
+                "hint": "HTML文件名格式，支持变量：${group_id}(群号)、${date}(日期)、${ulid}(时间排序ID)，支持子目录/层级。"
+            }
+        }
+    },
+    "qq_group_upload": {
+        "description": "群文件/群相册上传设置",
+        "type": "object",
+        "hint": "图片报告生成后自动上传到群文件目录或群相册。群文件上传基于 OneBot upload_group_file API。仅对 QQ（OneBot）平台的图片格式报告生效",
+        "items": {
+            "enable_group_file_upload": {
+                "type": "bool",
+                "description": "启用群文件上传",
+                "default": false,
+                "hint": "图片报告生成后，自动保存为 PNG 文件并上传到群文件目录。需要 OneBot 实现支持 upload_group_file API"
+            },
+            "group_file_folder": {
+                "type": "string",
+                "description": "群文件上传目录名",
+                "default": "",
+                "hint": "上传到群文件中的子目录名称。留空则上传到根目录。如果指定的目录不存在，插件将尝试自动创建"
+            },
+            "enable_group_album_upload": {
+                "type": "bool",
+                "description": "启用群相册上传",
+                "default": false,
+                "hint": "图片报告生成后，自动上传到群相册（确保 Bot 有权限上传群相册）。此功能为 NapCat 扩展 API，其他 OneBot 实现可能不支持"
+            },
+            "group_album_name": {
+                "type": "string",
+                "description": "目标群相册名称",
+                "default": "",
+                "hint": "指定上传到哪个群相册（请确保已经存在这个名称的相册）。留空则上传到群默认相册。如果指定的相册不存在，将回退到默认相册"
+            },
+            "group_album_strict_mode": {
+                "type": "bool",
+                "description": "群相册上传严格模式",
+                "default": true,
+                "hint": "当启用该开关且设置了目标群相册名称时：如果插件在目标群组中找不到同名的相册，将放弃上传。关闭该开关时，找不到目标相册将回退到群组默认的第一个相册。"
+            }
+        }
     }
-  },
-  "llm": {
-    "description": "LLM 设置",
-    "type": "object",
-    "hint": "大语言模型相关配置，包括 Provider 选择、重试策略和 Token 限制",
-    "items": {
-      "llm_provider_id": {
-        "type": "string",
-        "description": "LLM Provider ID（用于所有分析任务）",
-        "_special": "select_provider",
-        "default": "",
-        "hint": "选择用于群聊分析的 LLM Provider。留空则使用当前会话的默认 Provider"
-      },
-      "topic_provider_id": {
-        "type": "string",
-        "description": "话题分析专用 Provider ID",
-        "_special": "select_provider",
-        "default": "",
-        "hint": "专门用于话题分析的 Provider。留空则使用主 LLM Provider"
-      },
-      "golden_quote_provider_id": {
-        "type": "string",
-        "description": "信息差提取专用 Provider ID",
-        "_special": "select_provider",
-        "default": "",
-        "hint": "专门用于信息差/干货提取的 Provider。留空则使用主 LLM Provider"
-      },
-      "llm_retries": {
-        "type": "int",
-        "description": "LLM 请求重试次数",
-        "default": 2,
-        "hint": "当请求超时或失败时自动重试的次数，建议设置为1~3之间。"
-      },
-      "llm_backoff": {
-        "type": "int",
-        "description": "LLM 请求重试退避基值（秒）",
-        "default": 2,
-        "hint": "重试之间的基准等待时间（秒）。实际等待时间会随尝试次数指数增长，并加入少量随机抖动；当专用 Provider 失败后，会继续按队列尝试默认 Provider。"
-      },
-      "enable_streaming_llm_call": {
-        "type": "bool",
-        "description": "启用流式 LLM 调用",
-        "default": false,
-        "hint": "默认关闭，使用原有非流式调用方式。开启后，插件将使用 AstrBot Provider 的流式接口并聚合结果，适用于仅支持 stream=true 的服务。"
-      }
-    }
-  },
-  "performance": {
-    "description": "并发限流设置",
-    "type": "object",
-    "hint": "控制插件运行时的各项并发强度。合理的配置可以保护您的服务器不宕机、API 不被封禁。",
-    "items": {
-      "max_concurrent_groups": {
-        "type": "int",
-        "description": "最大活跃任务数（任务总闸）",
-        "default": 2,
-        "hint": "限制同时有多少个群聊分析任务正在进行。主要用于【保护服务器内存和 IO】，防止瞬间读取过多群聊记录导致程序崩溃（OOM）。"
-      },
-      "max_concurrent_llm": {
-        "type": "int",
-        "description": "最大 LLM 请求并发数（API 闸口）",
-        "default": 3,
-        "hint": "限制同时发起的 AI 分析请求数量。主要用于【遵守 API 频率限制（RPM）】，避免因为请求过快导致 API 被封号或报错。"
-      },
-      "max_concurrent_t2i": {
-        "type": "int",
-        "description": "最大 T2I渲染并发数",
-        "default": 1,
-        "hint": "限制同时开启的 T2I 渲染进程数。"
-      },
-      "stagger_seconds": {
-        "type": "int",
-        "description": "多群分析交错间隔（秒）",
-        "default": 30,
-        "hint": "当同时启动多个群组的定时分析任务时，每个任务之间的延迟间隔（秒），建议根据实际的 LLM 服务速度填写，过短可能导致请求堆积，过长则分析效率降低。"
-      }
-    }
-  },
-  "t2i_rendering": {
-    "description": "图片渲染策略",
-    "type": "object",
-    "hint": "配置 HTML 转图片的渲染参数。支持两轮尝试：第一轮优先保证质量，第二轮作为回退方案，建议使用更低的分辨率和质量以提高成功率。",
-    "items": {
-      "t2i_r1_type": {
-        "type": "string",
-        "description": "第一轮：图片格式",
-        "options": ["jpeg", "png"],
-        "default": "png",
-        "hint": "建议：PNG 格式无损但体积较大；JPEG 格式体积较小。"
-      },
-      "t2i_r1_quality": {
-        "type": "int",
-        "description": "第一轮：图片质量 (若为 JPEG)",
-        "default": 100,
-        "slider": { "min": 1, "max": 100, "step": 1 },
-        "hint": "仅对 JPEG 格式生效。建议 80-100。"
-      },
-      "t2i_r1_device_scale": {
-        "type": "string",
-        "description": "第一轮：分辨率等级",
-        "options": ["normal", "high", "ultra"],
-        "default": "ultra",
-        "hint": "影响图片清晰度。normal=1.0x, high=1.3x, ultra=1.8x。高质量日报建议 ultra。"
-      },
-      "t2i_r1_timeout": {
-        "type": "int",
-        "description": "第一轮：渲染超时 (ms)",
-        "default": 50000,
-        "slider": { "min": 30000, "max": 180000, "step": 5000 },
-        "hint": "单次渲染的最长等待时间。复杂页面建议调大。"
-      },
-      "t2i_r2_type": {
-        "type": "string",
-        "description": "第二轮 (回退)：图片格式",
-        "options": ["jpeg", "png"],
-        "default": "jpeg",
-        "hint": "回退策略建议使用 jpeg 以减少渲染压力。"
-      },
-      "t2i_r2_quality": {
-        "type": "int",
-        "description": "第二轮 (回退)：图片质量 (若为 JPEG)",
-        "default": 80,
-        "slider": { "min": 1, "max": 100, "step": 1 },
-        "hint": "仅对 JPEG 格式生效。可以设置较低值以确保生成成功。"
-      },
-      "t2i_r2_device_scale": {
-        "type": "string",
-        "description": "第二轮 (回退)：分辨率等级",
-        "options": ["normal", "high", "ultra"],
-        "default": "high",
-        "hint": "回退建议使用 high/normal 以降低复杂页面的内存消耗和超时概率。"
-      },
-      "t2i_r2_timeout": {
-        "type": "int",
-        "description": "第二轮 (回退)：渲染超时 (ms)",
-        "default": 100000,
-        "slider": { "min": 30000, "max": 180000, "step": 5000 },
-        "hint": "回退尝试通常针对复杂页面，建议设置更长的超时时间（如 100000ms+）。"
-      },
-      "t2i_font_source": {
-        "type": "string",
-        "description": "t2i 渲染环境切换",
-        "options": ["Mainland", "Overseas"],
-        "default": "Overseas",
-        "hint": "字体和静态资源的访问环境，内地（Mainland）、海外（Overseas），切换环境会自动应用下方对应的镜像站地址、语言标识(简体中文/繁体中文)及字体优先级。（实测 Overseas 也可以正常渲染简体中文）"
-      },
-      "t2i_mainland_google_fonts": {
-        "type": "string",
-        "description": "[内地] Google Fonts 镜像",
-        "default": "https://fonts.loli.net",
-        "hint": "内地环境下推荐使用 loli.net 或其他可访问镜像。"
-      },
-      "t2i_mainland_gstatic": {
-        "type": "string",
-        "description": "[内地] Gstatic 镜像",
-        "default": "https://gstatic.loli.net",
-        "hint": "内地环境下推荐使用 loli.net 或其他可访问镜像。"
-      },
-      "t2i_overseas_google_fonts": {
-        "type": "string",
-        "description": "[海外] Google Fonts 官方",
-        "default": "https://fonts.googleapis.com",
-        "hint": "海外环境通常直接使用官方地址即可。"
-      },
-      "t2i_overseas_gstatic": {
-        "type": "string",
-        "description": "[海外] Gstatic 官方",
-        "default": "https://fonts.gstatic.com",
-        "hint": "海外环境通常直接使用官方地址即可。"
-      }
-    }
-  },
-  "incremental": {
-    "description": "增量分析设置",
-    "type": "object",
-    "hint": "增量分析通过在活跃时段分步提取摘要，能显著提高分析深度和覆盖率。这里仅决定“已通过前两关的群”是走增量还是普通模式。",
-    "items": {
-      "incremental_group_list_mode": {
-        "type": "string",
-        "description": "增量分析名单模式",
-        "options": ["whitelist", "blacklist"],
-        "default": "whitelist",
-        "hint": "哪些群用“增量分析”。whitelist=只有列表里的群用增量；blacklist=除了列表外都用增量。没命中的群会走普通模式。注意：增量名单不负责放行群，只负责选模式。"
-      },
-      "incremental_group_list": {
-        "type": "list",
-        "description": "增量分析群列表",
-        "default": [],
-        "hint": "增量分析群列表。示例1：mode=whitelist + [\"onebot:GroupMessage:123456\"] => 只有这个群增量。示例2：mode=blacklist + [\"onebot:GroupMessage:123456\"] => 这个群不用增量，其他群用增量。注意：whitelist + 空列表 = 不启用增量。只有先通过基础群权限 + 定时名单的群，才会在这里判断。",
-        "items": { "type": "string" }
-      },
-      "incremental_report_immediately": {
-        "type": "bool",
-        "description": "增量分析立即报告（调试用）",
-        "default": false,
-        "hint": "【调试功能】启用后，每次增量分析完成后都会立即生成并发送一份最终报告。仅建议在调试时开启，生产环境请保持关闭，否则会频繁打扰群友。"
-      },
-      "incremental_interval_minutes": {
-        "type": "int",
-        "description": "增量分析间隔（分钟）",
-        "default": 120,
-        "hint": "每隔多少分钟执行一次增量分析。建议根据群聊实际情况处理，间隔越短分析越精细但消耗更多 Token。"
-      },
-      "incremental_max_daily_analyses": {
-        "type": "int",
-        "description": "每日最大增量分析次数",
-        "default": 8,
-        "hint": "一天内最多执行多少次增量分析。达到上限后当天不再触发新的增量分析，但仍会在报告时间生成最终报告。建议4-12次。"
-      },
-      "incremental_safe_limit": {
-        "type": "int",
-        "description": "增量分析单次安全上限 (Safe Count)",
-        "default": 2000,
-        "hint": "增量分析模式下，当群聊极其活跃导致大量消息堆积时，插件单次回溯历史的最大消息条数。这同时也是为了防止特殊情况下无限回溯。即使没追到上次分析的断点，拉满此数值也会强制停止。建议 1000-5000。"
-      },
-      "incremental_min_messages": {
-        "type": "int",
-        "description": "增量分析最小消息数阈值",
-        "default": 300,
-        "hint": "当自上次分析以来的新消息数低于此阈值时，跳过本次增量分析以节省 Token。建议设置较大值，因为当获取到的消息不够时，最晚消息的游标不会更新，等消息累计足够后的增量分析会进行分析。"
-      },
-      "incremental_topics_per_batch": {
-        "type": "int",
-        "description": "单次增量提取话题数",
-        "default": 2,
-        "hint": "每次增量分析最多提取的话题数量。最终报告会汇总所有批次的话题。建议1-4。"
-      },
-      "incremental_quotes_per_batch": {
-        "type": "int",
-        "description": "单次增量提取金句数",
-        "default": 2,
-        "hint": "每次增量分析最多提取的金句数量。最终报告会汇总所有批次的金句。建议1-2。"
-      },
-      "incremental_active_start_hour": {
-        "type": "int",
-        "description": "增量分析活跃起始时段",
-        "default": 8,
-        "hint": "增量分析的活跃时段起始小时（24小时制）。如果目标群聊凌晨也活跃，建议设定的很早；在活跃时段之外不会触发增量分析，避免凌晨等低活跃时段浪费分析配额."
-      },
-      "incremental_active_end_hour": {
-        "type": "int",
-        "description": "增量分析活跃结束时段",
-        "default": 23,
-        "hint": "增量分析的活跃时段结束小时（24小时制）。超过此时段后不再触发增量分析。"
-      },
-      "incremental_stagger_seconds": {
-        "type": "int",
-        "description": "多群增量分析交错间隔（秒）",
-        "default": 2,
-        "hint": "当同时对多个群进行增量分析时，每个群之间的延迟间隔（秒），用于均匀分散 API 请求压力。"
-      },
-      "incremental_fallback_enabled": {
-        "type": "bool",
-        "description": "增量失败自动回退全量分析",
-        "default": true,
-        "hint": "建议开启。开启后，如果增量分析失败，会自动改用普通分析，避免当天没报告。"
-      }
-    }
-  },
-  "html": {
-    "description": "HTML 设置",
-    "type": "object",
-    "hint": "HTML 报告输出相关配置，包括外链 Base URL 和报告储存目录",
-    "items": {
-      "html_base_url": {
-        "type": "string",
-        "description": "外鏈 Base URL",
-        "default": "",
-        "hint": "用于生成外链的 Base URL（可留空）。如果设置了此项，发送报告时会在消息中提供超连結 (${BASE_URL}/${FILENAME})。留空则不提供外链。"
-      },
-      "html_output_dir": {
-        "type": "string",
-        "description": "报告储存目录",
-        "default": "",
-        "hint": "HTML报告文件的保存目录，用于存储生成的 HTML 文件和原始 JSON 数据。留空则自动使用插件数据目录（astrbot_path/data/plugin_data/astrbot_plugin_qq_group_daily_analysis/）下的 self_hosted_html_reports 目录。"
-      },
-      "html_only_url": {
-        "type": "bool",
-        "description": "仅发送外链",
-        "default": false,
-        "hint": "勾选后，若配置了外链 Base URL，则发送 HTML 报告时将只发送外链链接，不再发送HTML文件，若未勾选，将保持发送HTML文件。"
-      },
-      "html_filename_format": {
-        "type": "string",
-        "description": "HTML文件名格式",
-        "default": "群聊分析报告_${group_id}_${date}_${ulid}.html",
-        "hint": "HTML文件名格式，支持变量：${group_id}(群号)、${date}(日期)、${ulid}(时间排序ID)，支持子目录/层级。"
-      }
-    }
-  },
-  "qq_group_upload": {
-    "description": "群文件/群相册上传设置",
-    "type": "object",
-    "hint": "图片报告生成后自动上传到群文件目录或群相册。群文件上传基于 OneBot upload_group_file API。仅对 QQ（OneBot）平台的图片格式报告生效",
-    "items": {
-      "enable_group_file_upload": {
-        "type": "bool",
-        "description": "启用群文件上传",
-        "default": false,
-        "hint": "图片报告生成后，自动保存为 PNG 文件并上传到群文件目录。需要 OneBot 实现支持 upload_group_file API"
-      },
-      "group_file_folder": {
-        "type": "string",
-        "description": "群文件上传目录名",
-        "default": "",
-        "hint": "上传到群文件中的子目录名称。留空则上传到根目录。如果指定的目录不存在，插件将尝试自动创建"
-      },
-      "enable_group_album_upload": {
-        "type": "bool",
-        "description": "启用群相册上传",
-        "default": false,
-        "hint": "图片报告生成后，自动上传到群相册（确保 Bot 有权限上传群相册）。此功能为 NapCat 扩展 API，其他 OneBot 实现可能不支持"
-      },
-      "group_album_name": {
-        "type": "string",
-        "description": "目标群相册名称",
-        "default": "",
-        "hint": "指定上传到哪个群相册（请确保已经存在这个名称的相册）。留空则上传到群默认相册。如果指定的相册不存在，将回退到默认相册"
-      },
-      "group_album_strict_mode": {
-        "type": "bool",
-        "description": "群相册上传严格模式",
-        "default": true,
-        "hint": "当启用该开关且设置了目标群相册名称时：如果插件在目标群组中找不到同名的相册，将放弃上传。关闭该开关时，找不到目标相册将回退到群组默认的第一个相册。"
-      }
-    }
-  }
 }

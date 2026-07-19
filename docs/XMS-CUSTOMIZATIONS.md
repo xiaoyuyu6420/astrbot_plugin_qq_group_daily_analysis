@@ -16,7 +16,7 @@
 | 2 | 手动命令 `/群分析` 也改私聊 | `main.py` | +15 / -0 |
 | 3 | 信息差主题（替换原"逆天言论"） | `_conf_schema.json` 的 `prompts` | 见下 |
 | 4 | 配置面板重排（admin_notify / prompts / message_monitor 提到最上） | `_conf_schema.json` | 结构调整 |
-| 5 | **硬关闭并移除娱乐功能**（称号/MBTI/锐评） | `_conf_schema.json`, `config_manager.py`, `generators.py`, 模板文案 | 功能收敛 |
+| 5 | **物理移除娱乐功能**（称号/MBTI/锐评） | 全层级（domain/infrastructure/application/templates/config） | 功能收敛 + 死代码清除 |
 | 6 | 元数据 + logo | `metadata.yaml`, `logo.png` | 版本/作者/占位图 |
 | 7 | 单群情报场景默认值 | `_conf_schema.json`, `config_manager.py` | 默认更贴近「私聊 + 单群」 |
 | 8 | 私聊推送可靠性（图片失败回退文本） | `dispatcher.py` | 及时送达 |
@@ -78,37 +78,42 @@
 ...（其余按原序）
 ```
 
-### 定制点 5：去掉娱乐功能，只留有效信息挖掘
+### 定制点 5：物理移除娱乐功能，只留有效信息挖掘
 
-**目标**：保留「输出方式 + 自定义程度」，去掉娱乐向分析。
+**目标**：保留「输出方式 + 自定义程度」，彻底移除娱乐向分析的代码，而非仅硬关闭开关。
 
 **保留**：
 - 输出：`image` / `text` / `html`
 - 模板：`report_template`（默认改为 `simple`）
 - 自定义：话题 prompt、信息差 prompt、LLM provider、定时时间、群白名单、管理员推送
 
-**去掉 / 硬关闭**：
-- 用户称号 + MBTI / SBTI / ACGTI 画像
-- 聊天质量锐评
-- 配置面板中的相关开关、prompt、provider、profile 映射大 JSON
+**已物理移除**（v4.11.0-xms 起不再存在代码）：
+- 用户称号 + MBTI / SBTI / ACGTI 画像：整条链路删除（domain/value_objects、domain/services、infrastructure/analyzers、templates、profile_assets、config getter/setter/prompt）
+- 聊天质量锐评：整条链路删除（domain/data_models QualityReview/QualityDimension、infrastructure/analyzers、config getter/setter/prompt）
+- `DEFAULT_PROFILE_MAPPING`、`_load_profile_asset_manifest`、`_resolve_profile_info` 等 profile 映射代码
+- HTML 模板中 `user_title_item.html` / `chat_quality_item.html`（8 主题 × 2 = 16 个文件已删）
+- HTML 模板中 `{% if titles_html %}` / `{% if chat_quality_html %}` 整块已删
+- `assets/profile_assets/` 目录（manifest.json + 图片资源）已删
 
-**实现方式**（不是只改默认值）：
+**实现方式**：
 1. `_conf_schema.json`：从面板删除娱乐配置项（称号/锐评 prompt、profile_*、对应 provider）
-2. `config_manager.get_user_title_analysis_enabled()` / `get_chat_quality_analysis_enabled()` **始终返回 False**  
-   （即使旧配置文件里还是 true，也不会再跑娱乐 LLM）
-3. `set_*` 强制写 False，防止命令/旧逻辑重新打开
-4. `generators.py`：文本/HTML 渲染跳过称号与锐评板块；信息差文案改为「信息差/商机/干货」
-5. 若干模板 `quote_item.html` / `topic_item.html` 标题从「群圣经 / 热门话题」改为情报向文案
+2. `config_manager.py`：删除所有 user_title/chat_quality/profile 的 getter/setter/prompt 方法
+3. `generators.py`：删除 `DEFAULT_PROFILE_MAPPING`、profile 解析方法、称号/锐评渲染分支；`titles_html`/`chat_quality_html` 渲染数据保留空字符串占位（模板兼容）
+4. `analysis_application_service.py`：`analyze_all_concurrent` 返回 3 元组（topics, golden_quotes, total_usage），`analyze_incremental_concurrent` 同理；`analysis_result` dict 保留 `user_titles: []` / `chat_quality_review: None` 占位 key
+5. `llm_analyzer.py`：删除 `analyze_user_titles` / `summarize_quality_reviews` 方法，不再实例化 `UserTitleAnalyzer` / `ChatQualityAnalyzer`
+6. domain 层：删除 `UserTitle`、`QualityReview`、`QualityDimension` 类；`IAnalysisProvider` 签名改为 3 元组
+7. 若干模板 `quote_item.html` / `topic_item.html` 标题从「群圣经 / 热门话题」改为情报向文案
 
 ### 定制点 6：元数据 + logo
 
 **`metadata.yaml`**：
 | 字段 | 上游 | 定制 |
 |------|------|------|
-| `display_name` | 群分析总结插件 | 群分析总结·管理员推送版 |
-| `version` | v4.10.8 | v4.10.8-xms |
-| `author` | SXP-Simon | SXP-Simon (xms 定制) |
-| `desc` | 原描述 | 标注「定制版 + 管理员私聊推送」 |
+| `display_name` | 群分析总结插件 | 世健世健你的好友 |
+| `version` | v4.10.8 | v4.11.0-xms |
+| `author` | SXP-Simon | SXP-Simon (xms 定制 by xiaoyuyu6420) |
+| `desc` | 原描述 | 标注「定制版 + 管理员私聊推送 + 信息差/商机/干货」 |
+| `repo` | 上游仓库 | https://github.com/xiaoyuyu6420/astrbot_plugin_qq_group_daily_analysis |
 
 **`logo.png`**：原图（225×225, 104KB）→ 1×1 透明占位（69B）。目的是在 astrbot 插件列表里不显示原图。
 

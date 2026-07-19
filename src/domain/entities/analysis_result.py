@@ -17,19 +17,6 @@ class SummaryTopic:
 
 
 @dataclass
-class UserTitle:
-    """用户称号/画像"""
-
-    name: str
-    user_id: str
-    title: str
-    mbti: str
-    reason: str
-    avatar_url: str | None = None
-    avatar_data: str | None = None
-
-
-@dataclass
 class GoldenQuote:
     """金句"""
 
@@ -111,7 +98,6 @@ class GroupAnalysisResult:
     message_count: int = 0
     statistics: GroupStatistics = field(default_factory=GroupStatistics)
     topics: list[SummaryTopic] = field(default_factory=list)
-    user_titles: list[UserTitle] = field(default_factory=list)
     golden_quotes: list[GoldenQuote] = field(default_factory=list)
 
     # 元数据
@@ -121,4 +107,4 @@ class GroupAnalysisResult:
 
     def has_content(self) -> bool:
         """检查结果是否有分析内容"""
-        return bool(self.topics or self.user_titles or self.golden_quotes)
+        return bool(self.topics or self.golden_quotes)

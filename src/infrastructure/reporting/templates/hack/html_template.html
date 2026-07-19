@@ -46,17 +46,7 @@
                         <span style="color: var(--accent-green);">// Total characters: {{total_characters}}</span>
                     </div>
                 </div>
-
-                {% if chat_quality_html %}
-                <div class="report-section quality-section">
-                    <div class="section-header">
-                        <span class="prompt">$</span> analyze --quality
-                    </div>
-                    {{ chat_quality_html | safe }}
-                </div>
-                {% endif %}
- 
-                <!-- Topics moved into left column -->
+<!-- Topics moved into left column -->
                 {% if topics_html %}
                 <div class="report-section topics-section">
                     <div class="section-header">
@@ -86,18 +76,7 @@
                 </div>
  
                 <!-- User Titles grouped here -->
-                {% if titles_html %}
-                <div class="report-section titles-section">
-                    <div class="section-header">
-                        <span class="prompt">$</span> cat ./user_titles
-                    </div>
-                    <div class="user-grid">
-                        {{titles_html | safe}}
-                    </div>
-                </div>
-                {% endif %}
- 
-                <!-- Golden Quotes grouped here -->
+<!-- Golden Quotes grouped here -->
                 {% if quotes_html %}
                 <div class="report-section quotes-section">
                     <div class="section-header">
@@ -123,7 +102,5 @@
 </body>
 
 </html>
-
-
 
 
