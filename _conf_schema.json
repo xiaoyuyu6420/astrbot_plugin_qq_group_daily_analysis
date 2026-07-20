@@ -1,8 +1,8 @@
 {
     "admin_notify": {
-        "description": "管理员私聊推送（情报及时送达）",
+        "description": "管理员私聊推送（定时日报默认走私聊）",
         "type": "object",
-        "hint": "开启后报告只私聊管理员、不发群。管理员 QQ 读取 AstrBot 超级管理员，也可额外补充。注意：bot 与管理员需互为好友。",
+        "hint": "主要影响【定时日报】与手动 /群分析 的发送目标：开启后报告私聊管理员、不发群。实时监控的接收人请到 message_monitor.alert_admin_qqs 配置（空则回退到这里的管理员列表）。bot 与管理员需互为好友。",
         "items": {
             "enable_admin_notify": {
                 "type": "bool",
@@ -22,49 +22,59 @@
         }
     },
     "message_monitor": {
-        "description": "实时消息监控（盯人预警·整窗汇总）",
+        "description": "① 实时消息监控（与下方「定时分析」无关）",
         "type": "object",
-        "hint": "实时监听监控群的消息，发现有价值信息立即/定时推给你。两种模式可选：keyword（关键词即时——任何人发命中关键词的消息立刻推，适合盯全群），window（整窗汇总——攒 X 分钟让 LLM 在完整上下文里提取目标 QQ 价值信息，适合盯特定人）。需要 bot 与推送目标 QQ 互为好友。",
+        "hint": "【实时链路】监听群消息，有价值就立刻/几分钟内私聊你。与「定时分析」(auto_analysis) 完全独立：那边是每天固定时间出日报，这边是实时盯盘。\n\n配置顺序建议：\n1) 开总开关\n2) 选触发方式 monitor_mode（keyword 即时 / window 整窗）\n3) 若选 window，再选分析范围 window_scope（单群独立 / 多群汇总）\n4) 填监控群、目标 QQ、推送人",
         "items": {
             "enable_monitor": {
                 "type": "bool",
                 "default": false,
-                "description": "开启实时消息监控",
-                "hint": "开启后，按 monitor_mode 选择的模式工作。关闭=不盯。"
+                "description": "【总开关】开启实时消息监控",
+                "hint": "关=整条实时链路停用。开了再往下选模式与范围。"
             },
             "monitor_mode": {
                 "type": "string",
-                "description": "监控模式",
+                "description": "【触发方式】keyword 即时 / window 整窗",
                 "options": [
                     "keyword",
                     "window"
                 ],
                 "default": "window",
-                "hint": "keyword=关键词即时：任何人发的消息命中关键词/正则就立即推送（快，适合盯全群的关键词如 API key/资源）。window=整窗汇总：攒 X 分钟的消息让 LLM 在完整上下文里提取目标 QQ 价值信息（准，适合盯特定人）。"
+                "hint": "keyword=关键词即时：命中关键词/正则就推（秒级，适合盯全群 API key/资源）。\nwindow=整窗汇总：攒 N 分钟后用 LLM 总结（分钟级，适合盯特定人、需要上下文）。\n\n两者不要混着理解：keyword 是「即时告警」，window 是「短时简报」。"
             },
-            "monitored_qqs": {
-                "type": "list",
-                "description": "要盯的 QQ 号",
-                "default": [],
-                "hint": "要盯的 QQ 号（纯数字）。window 模式必填——LLM 重点提取这些人的发言。keyword 模式下可选——填了则只检测这些人的消息，空=检测群里所有人。",
-                "items": {
-                    "type": "string"
-                }
+            "window_scope": {
+                "type": "string",
+                "description": "【分析范围·仅 window】单群独立 / 多群汇总",
+                "options": [
+                    "per_group",
+                    "cross_group"
+                ],
+                "default": "per_group",
+                "hint": "只在 monitor_mode=window 时生效。\n\nper_group（单群独立分析，默认）= 每个监控群各自出一份简报，互不合并。\ncross_group（多群汇总分析）= 把所有监控群窗口内消息合并，LLM 按话题聚类，输出一份跨群简报（去重、标来源群）。\n\nkeyword 模式忽略此项。旧配置 enable_cross_group=true 仍兼容为 cross_group。"
             },
             "monitored_groups": {
                 "type": "list",
-                "description": "监控群列表（必填）",
+                "description": "【范围】监控群列表（必填）",
                 "default": [],
-                "hint": "要监控的群号（纯数字）。必填——插件会攒这些群里的【所有人】消息作为上下文，让 LLM 在完整对话中判断目标 QQ 的发言是否有价值。空=不盯任何群。",
+                "hint": "要监控的群号（纯数字）。空=不盯任何群。\n单群：填 1 个群；多群：填多个。window_scope=cross_group 时，这些群会在一次 flush 里被合并分析。",
                 "items": {
                     "type": "string"
                 }
             },
-            "extra_keywords": {
+            "monitored_qqs": {
                 "type": "list",
-                "description": "自定义关键词",
+                "description": "【范围】要盯的目标 QQ",
                 "default": [],
-                "hint": "自定义关键词列表。keyword 模式下任何人发的消息命中这些词就推送；window 模式下会提示 LLM 特别关注。例如 [\"破解\", \"激活码\", \"资源\"]。",
+                "hint": "window 模式建议必填：LLM 重点提取这些人的发言价值。\nkeyword 模式可选：填了=只检测这些人；空=检测群里所有人。",
+                "items": {
+                    "type": "string"
+                }
+            },
+            "alert_admin_qqs": {
+                "type": "list",
+                "description": "【推送】预警接收人 QQ",
+                "default": [],
+                "hint": "实时预警私聊发给谁。空=复用管理员 QQ（AstrBot 超管 + admin_notify.extra_admin_qq）。与定时日报的接收人可分开配。",
                 "items": {
                     "type": "string"
                 }
@@ -72,53 +82,47 @@
             "use_llm_confirm": {
                 "type": "bool",
                 "default": true,
-                "description": "用 LLM 二次确认",
-                "hint": "keyword 模式：命中关键词后用 LLM 二次确认是否真有用（减少误推）。window 模式：每个批次用 LLM 提取有价值信息。关闭=省 token 但噪音多。LLM 不可用时自动降级。"
+                "description": "【质量】用 LLM 过滤/提取",
+                "hint": "keyword：命中后 LLM 二次确认是否真有用（减少误推）。\nwindow：每个窗口用 LLM 提取有价值信息。\n关=省 token、噪音多；LLM 挂了会自动降级。"
             },
             "flush_interval": {
                 "type": "int",
                 "default": 10,
-                "description": "汇总间隔（分钟）",
-                "hint": "【仅 window 模式】每隔多少分钟把积攒的消息批量总结推送一次。建议 5~30，默认 10。"
+                "description": "【window】汇总间隔（分钟）",
+                "hint": "仅 window 模式：每隔多少分钟 flush 一次并推简报。建议 5~30，默认 10。keyword 模式不看这个。"
             },
             "max_context_messages": {
                 "type": "int",
                 "default": 50,
-                "description": "对话窗口最大条数",
-                "hint": "【仅 window 模式】送给 LLM 的对话上下文最多多少条。超出时以目标 QQ 为中心截断。默认 50。"
+                "description": "【window】对话窗口最大条数",
+                "hint": "仅 window 模式：送给 LLM 的上下文最多多少条。超出时以目标 QQ 为中心截断。默认 50。"
             },
-            "alert_admin_qqs": {
+            "extra_keywords": {
                 "type": "list",
-                "description": "预警推送目标 QQ",
+                "description": "【keyword】自定义关键词",
                 "default": [],
-                "hint": "预警私聊发给谁。空=复用管理员 QQ（AstrBot 超管 + admin_notify.extra_admin_qq）；填了=只发给这些 QQ。",
+                "hint": "主要给 keyword 模式用：命中即触发。window 模式仅作 LLM 提示。例：[\"破解\", \"激活码\", \"资源\"]。",
                 "items": {
                     "type": "string"
                 }
             },
-            "enable_cross_group": {
-                "type": "bool",
-                "default": false,
-                "description": "跨群聚合简报",
-                "hint": "【仅 window 模式】开启后，flush 时合并所有监控群的消息，让 LLM 按话题聚类，输出一份跨群简报（去重、标注来源群、合并重复话题）。关闭=每群独立推送。"
-            },
             "cooldown_seconds": {
                 "type": "int",
                 "default": 60,
-                "description": "推送冷却（秒）",
-                "hint": "【仅 keyword 模式】同一发送者@同一群的最小推送间隔，防刷屏。0=不冷却。API Key 等关键命中不受此限制。默认 60。"
+                "description": "【keyword 降噪】推送冷却（秒）",
+                "hint": "仅 keyword：同一发送者@同一群最小推送间隔。0=不冷却。API Key 等 critical 命中豁免。默认 60。"
             },
             "dedup_minutes": {
                 "type": "int",
                 "default": 30,
-                "description": "内容去重窗口（分钟）",
-                "hint": "内容相似的消息在 N 分钟内只推一次，防跨群重复轰炸。0=不去重。默认 30。"
+                "description": "【降噪】内容去重窗口（分钟）",
+                "hint": "内容相似消息在 N 分钟内只推一次，防跨群重复轰炸。0=不去重。默认 30。keyword/window 都可用。"
             },
             "keyword_batch_seconds": {
                 "type": "int",
                 "default": 60,
-                "description": "关键词批量合并间隔（秒）",
-                "hint": "【仅 keyword 模式】normal 优先级（资源链接、自定义关键词等）的命中不立即推，攒 N 秒合并成一条推送。0=不合并（立即推）。API Key 等关键命中不受此限制。默认 60。"
+                "description": "【keyword 降噪】批量合并间隔（秒）",
+                "hint": "仅 keyword：normal 优先级（资源/自定义词）攒 N 秒合并成一条。0=立即推。critical 不受限。默认 60。"
             }
         }
     },
@@ -208,13 +212,13 @@
         }
     },
     "auto_analysis": {
-        "description": "定时分析设置",
+        "description": "② 定时日报分析（与上方「实时监控」无关）",
         "type": "object",
-        "hint": "配置每日自动分析的时间点和目标群聊范围。只有先通过基础群权限的群，才会在这里继续判断。",
+        "hint": "【定时链路】到点对名单里的群跑「群聊日报」并推送（默认私聊管理员）。与 message_monitor 实时盯盘互不影响：一边是每天固定时间总结，一边是分钟级/秒级预警。",
         "items": {
             "auto_analysis_time": {
                 "type": "list",
-                "description": "自动分析时间列表",
+                "description": "【定时】自动分析时间点",
                 "default": [
                     "23:00"
                 ],
@@ -225,7 +229,7 @@
             },
             "scheduled_group_list_mode": {
                 "type": "string",
-                "description": "定时分析名单模式",
+                "description": "【定时】名单模式",
                 "options": [
                     "whitelist",
                     "blacklist"
@@ -235,9 +239,9 @@
             },
             "scheduled_group_list": {
                 "type": "list",
-                "description": "定时分析群列表",
+                "description": "【定时】要出日报的群列表",
                 "default": [],
-                "hint": "定时任务群列表。示例1：mode=whitelist + [\"onebot:GroupMessage:123456\"] => 只跑这个群。示例2：mode=blacklist + [\"onebot:GroupMessage:123456\"] => 这个群不跑，其他群跑。注意：whitelist + 空列表 = 不会开启定时任务。即使某群在增量名单里，只要不在定时白名单里，也不会自动触发。",
+                "hint": "填 UMO 或群号。空白名单=不定时跑。注意：这是日报群列表，不是实时监控的 monitored_groups。",
                 "items": {
                     "type": "string"
                 }

@@ -261,26 +261,35 @@ AstrBot 对已安装插件会保留现有配置文件；schema 默认值只在**
 - `config_manager.py`：新增 `get_cooldown_seconds` / `get_dedup_minutes` / `get_keyword_batch_seconds`
 - `_conf_schema.json`：`message_monitor` 组新增 3 项配置
 
-### 定制点 12：跨群智能聚合
+### 定制点 12：跨群智能聚合（配置面板拆分：单群 / 多群）
 
-**问题**：window 模式按群×QQ 双重切分，3 个群 × 1 个目标 QQ = 3 条独立推送。同一事件被切碎、跨群重复信息无法合并。需要「综合多群信息做总结」。
+**问题**：
+1. window 模式按群×QQ 双重切分，3 个群 × 1 个目标 QQ = 3 条独立推送，同一事件被切碎。
+2. 配置面板里「实时监控」与「定时日报」概念混在一组文案里，且「单群分析 vs 多群汇总」没有一等配置项，只有埋在降噪区附近的 `enable_cross_group` 布尔开关。
 
-**开启方式**：`message_monitor.enable_cross_group = true`
+**面板结构（当前）**：
+- `message_monitor` 标题：`① 实时消息监控（与下方「定时分析」无关）`
+- `auto_analysis` 标题：`② 定时日报分析（与上方「实时监控」无关）`
+- 实时链路内部顺序：总开关 → **触发方式** `monitor_mode`（keyword/window）→ **分析范围** `window_scope`（per_group/cross_group）→ 监控群/目标QQ/推送人 → window/keyword 专用参数 → 降噪
 
-**关闭时**：window 模式逐群独立推送（原行为，每群每 QQ 一条汇总）。
+**开启多群汇总**：
+- 新配置：`message_monitor.window_scope = "cross_group"`（单群独立 = `"per_group"`，默认）
+- 旧配置兼容：`enable_cross_group=true` 仍映射为 `cross_group`；若同时写了 `window_scope`，以新键为准
 
-**开启时**：flush 合并所有监控群的消息 → LLM 按话题聚类 → 输出一份统一简报。
+**关闭时（per_group）**：window 模式逐群独立推送（每群一份简报）。
+
+**开启时（cross_group）**：flush 合并所有监控群的消息 → LLM 按话题聚类 → 输出一份统一简报。
 
 **架构**：
 ```
-_flush_all() 检测 enable_cross_group?
-  true  → _flush_cross_group(batches)
+_flush_all() 检测 window_scope / enable_cross_group
+  cross_group → _flush_cross_group(batches)
            合并所有群消息（标注来源群）
            → 过滤：至少一个目标 QQ 发言
            → 截断（max_context_messages）
            → LLM 跨群聚类提取（_CROSS_GROUP_SYSTEM_PROMPT）
            → 输出统一简报
-  false → 逐群 _flush_group()（原行为）
+  per_group → 逐群 _flush_group()（原行为）
 ```
 
 **LLM 聚类 prompt** 返回 JSON：
@@ -327,8 +336,8 @@ _flush_all() 检测 enable_cross_group?
 
 **修改文件**：
 - `message_monitor_service.py`：新增 `_flush_cross_group` / `_build_cross_group_dialog` / `_llm_cross_group_extract` / `_push_cross_group_brief` 方法，新增 `_CROSS_GROUP_SYSTEM_PROMPT` / `_CROSS_GROUP_USER_TEMPLATE` 常量，`_flush_all` 加分流逻辑
-- `config_manager.py`：新增 `is_cross_group_enabled`
-- `_conf_schema.json`：`message_monitor` 组新增 `enable_cross_group` 配置项
+- `config_manager.py`：`get_window_scope()` + `is_cross_group_enabled()`（读 `window_scope`，兼容旧 `enable_cross_group`）
+- `_conf_schema.json`：`message_monitor` 用 `window_scope` 一等选项表达单群/多群；组文案与 `auto_analysis` 明确拆成实时 vs 定时
 
 ---
 
@@ -382,10 +391,11 @@ _flush_all() 检测 enable_cross_group?
 | `dedup_minutes` | 30 | 内容去重窗口（分钟）。内容相似消息在窗口内只推一次。0=不去重 |
 | `keyword_batch_seconds` | 60 | keyword 模式 normal 优先级批量合并间隔（秒）。0=不合并（立即推） |
 
-### 启用跨群聚合
+### 启用跨群聚合（多群汇总分析）
 
-1. **开启开关**：`message_monitor.enable_cross_group` = `true`
-2. **前提**：`monitor_mode` = `window`（跨群聚合只对整窗模式有效）
+1. **触发方式**：`message_monitor.monitor_mode` = `window`（只对整窗模式有效）
+2. **分析范围**：`message_monitor.window_scope` = `cross_group`  
+   （单群独立：`per_group`；旧配置 `enable_cross_group=true` 仍兼容）
 3. **效果**：flush 时合并所有监控群消息，LLM 按话题聚类输出统一简报（而非每群独立一条）
 4. **降级**：LLM 不可用时自动回退为逐群独立推送
 

@@ -493,11 +493,30 @@ class ConfigManager:
         return bool(self._get_group("message_monitor").get("enable_monitor", False))
 
     def get_monitor_mode(self) -> str:
-        """监控模式：keyword（关键词即时）或 window（整窗汇总，默认）"""
+        """监控触发方式：keyword（关键词即时）或 window（整窗汇总，默认）。
+
+        与 window_scope（单群/多群）正交：先选触发方式，window 再选分析范围。
+        """
         mode = str(self._get_group("message_monitor").get("monitor_mode", "window")).strip().lower()
         if mode not in ("keyword", "window"):
             mode = "window"
         return mode
+
+    def get_window_scope(self) -> str:
+        """window 模式的分析范围：per_group（单群独立）或 cross_group（多群汇总）。
+
+        兼容旧配置 enable_cross_group：
+        - 若显式配置了 window_scope，以之为准
+        - 否则 enable_cross_group=true → cross_group，false/缺省 → per_group
+        """
+        group = self._get_group("message_monitor")
+        raw = str(group.get("window_scope", "")).strip().lower()
+        if raw in ("per_group", "cross_group"):
+            return raw
+        # 旧键兼容
+        if bool(group.get("enable_cross_group", False)):
+            return "cross_group"
+        return "per_group"
 
     def get_monitored_qqs(self) -> list[str]:
         """要监控的 QQ 号列表"""
@@ -550,8 +569,11 @@ class ConfigManager:
         return [str(x).strip() for x in raw if str(x).strip()]
 
     def is_cross_group_enabled(self) -> bool:
-        """是否开启跨群聚合简报（window 模式下合并多群输出）。"""
-        return bool(self._get_group("message_monitor").get("enable_cross_group", False))
+        """是否开启跨群聚合简报（window 模式下合并多群输出）。
+
+        新配置读 window_scope；旧配置 enable_cross_group 仍兼容。
+        """
+        return self.get_window_scope() == "cross_group"
 
     def get_cooldown_seconds(self) -> int:
         """keyword 模式推送冷却间隔（秒）。同一发送者@同一群在此期间不重复推送。0=不冷却。"""
