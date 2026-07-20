@@ -601,6 +601,49 @@ class ConfigManager:
         except (TypeError, ValueError):
             return 60
 
+    # ==================== 分层聚合 / 分类频道 ====================
+
+    def get_aggregation_mode(self) -> str:
+        """跨群聚合方式：layered（分层，默认）或 legacy（单次 LLM）。"""
+        mode = str(self._get_group("message_monitor").get("aggregation_mode", "layered")).strip().lower()
+        return mode if mode in ("layered", "legacy") else "layered"
+
+    def get_channel_push_mode(self) -> str:
+        """分类频道推送形态：split（每频道一条，默认）或 merged（合并总简报）。"""
+        mode = str(self._get_group("message_monitor").get("channel_push_mode", "split")).strip().lower()
+        return mode if mode in ("split", "merged") else "split"
+
+    def get_channels_enabled(self) -> list[str]:
+        """启用的频道列表。空=用默认全开（不含 other）。"""
+        raw = self._get_group("message_monitor").get("channels_enabled", [])
+        if not isinstance(raw, list):
+            raw = [raw]
+        from ...domain.services.intel_taxonomy import ALL_CHANNELS, DEFAULT_ENABLED_CHANNELS
+
+        channels = [str(x).strip().lower() for x in raw if str(x).strip()]
+        channels = [c for c in channels if c in ALL_CHANNELS]
+        return channels or list(DEFAULT_ENABLED_CHANNELS)
+
+    def get_max_items_per_channel(self) -> int:
+        """每频道最多保留条数。"""
+        try:
+            val = int(
+                self._get_group("message_monitor").get("max_items_per_channel", 5)
+            )
+            return max(1, val)
+        except (TypeError, ValueError):
+            return 5
+
+    def get_max_candidates_per_group(self) -> int:
+        """每群 L1 最多候选条数。"""
+        try:
+            val = int(
+                self._get_group("message_monitor").get("max_candidates_per_group", 5)
+            )
+            return max(1, val)
+        except (TypeError, ValueError):
+            return 5
+
     def set_scheduled_group_list(self, groups: list[str]):
         """设置定时分析目标群列表"""
         self._ensure_group("auto_analysis")["scheduled_group_list"] = groups

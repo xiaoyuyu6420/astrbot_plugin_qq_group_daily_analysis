@@ -11,6 +11,25 @@
 
 from .golden_quote_analyzer import GoldenQuoteAnalyzerAdapter, IGoldenQuoteAnalyzer
 from .incremental_merge_service import IncrementalMergeService
+from .intel_taxonomy import (
+    ALL_CHANNELS,
+    CHANNEL_APIKEY,
+    CHANNEL_DEAL,
+    CHANNEL_INTEL,
+    CHANNEL_METHOD,
+    CHANNEL_OTHER,
+    CHANNEL_RESOURCE,
+    DEFAULT_ENABLED_CHANNELS,
+    PRIORITY_CRITICAL,
+    PRIORITY_LOW,
+    PRIORITY_NORMAL,
+    best_priority,
+    channel_display,
+    channel_emoji,
+    channel_priority,
+    normalize_channel,
+    priority_rank,
+)
 from .statistics_calculator import StatisticsCalculator
 from .topic_analyzer import ITopicAnalyzer, TopicAnalyzerAdapter
 
@@ -25,4 +44,22 @@ __all__ = [
     # 金句分析服务
     "IGoldenQuoteAnalyzer",
     "GoldenQuoteAnalyzerAdapter",
+    # 情报分类体系
+    "ALL_CHANNELS",
+    "CHANNEL_APIKEY",
+    "CHANNEL_DEAL",
+    "CHANNEL_INTEL",
+    "CHANNEL_METHOD",
+    "CHANNEL_OTHER",
+    "CHANNEL_RESOURCE",
+    "DEFAULT_ENABLED_CHANNELS",
+    "PRIORITY_CRITICAL",
+    "PRIORITY_LOW",
+    "PRIORITY_NORMAL",
+    "best_priority",
+    "channel_display",
+    "channel_emoji",
+    "channel_priority",
+    "normalize_channel",
+    "priority_rank",
 ]

@@ -19,6 +19,7 @@ from .analysis_result import (
 )
 from .analysis_task import AnalysisTask, TaskStatus
 from .incremental_state import IncrementalBatch, IncrementalState
+from .intel_item import IntelItem
 
 __all__ = [
     "AnalysisTask",
@@ -32,4 +33,5 @@ __all__ = [
     "GroupStatistics",
     "IncrementalBatch",
     "IncrementalState",
+    "IntelItem",
 ]

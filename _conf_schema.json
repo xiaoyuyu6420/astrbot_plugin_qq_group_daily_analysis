@@ -22,9 +22,9 @@
         }
     },
     "message_monitor": {
-        "description": "① 实时消息监控（与下方「定时分析」无关）",
+        "description": "① 实时消息监控（盯人预警 · 分层聚合 · 分类频道）",
         "type": "object",
-        "hint": "【实时链路】监听群消息，有价值就立刻/几分钟内私聊你。与「定时分析」(auto_analysis) 完全独立：那边是每天固定时间出日报，这边是实时盯盘。\n\n配置顺序建议：\n1) 开总开关\n2) 选触发方式 monitor_mode（keyword 即时 / window 整窗）\n3) 若选 window，再选分析范围 window_scope（单群独立 / 多群汇总）\n4) 填监控群、目标 QQ、推送人",
+        "hint": "【实时链路】监听群消息，有价值就立刻/几分钟内私聊你。与「定时分析」(auto_analysis) 完全独立。\n\n配置顺序：1) 总开关 2) monitor_mode 触发方式 3) window_scope 分析范围 4) aggregation_mode 聚合方式（仅 cross_group） 5) 频道订阅 channels_enabled 6) 监控群/目标QQ/推送人。\n\n群多时（10+）推荐 window_scope=cross_group + aggregation_mode=layered + channel_push_mode=split，按密钥/资源/商机/情报/干货分频道推，可订阅只收关键频道。",
         "items": {
             "enable_monitor": {
                 "type": "bool",
@@ -51,6 +51,53 @@
                 ],
                 "default": "per_group",
                 "hint": "只在 monitor_mode=window 时生效。\n\nper_group（单群独立分析，默认）= 每个监控群各自出一份简报，互不合并。\ncross_group（多群汇总分析）= 把所有监控群窗口内消息合并，LLM 按话题聚类，输出一份跨群简报（去重、标来源群）。\n\nkeyword 模式忽略此项。旧配置 enable_cross_group=true 仍兼容为 cross_group。"
+            },
+            "aggregation_mode": {
+                "type": "string",
+                "description": "【跨群聚合·核心】聚合方式",
+                "options": [
+                    "layered",
+                    "legacy"
+                ],
+                "default": "layered",
+                "hint": "layered（推荐，默认）= 分层聚合：每群本地规则提炼 candidates → 跨群指纹去重 → 按频道分类打包。50+ 群可用，不全量塞一次 LLM。\nlegacy = 兼容旧行为：所有群原始聊天拼一份文本送 LLM 聚类（4000 字截断，群多会丢）。"
+            },
+            "channel_push_mode": {
+                "type": "string",
+                "description": "【跨群聚合·推送】频道推送形态",
+                "options": [
+                    "split",
+                    "merged"
+                ],
+                "default": "split",
+                "hint": "split（默认）= 每个分类频道各推一条（密钥/资源/商机/情报/干货）。\nmerged = 合并成一条总简报（兼容旧格式）。"
+            },
+            "channels_enabled": {
+                "type": "list",
+                "description": "【跨群聚合·订阅】启用的频道",
+                "default": [
+                    "apikey",
+                    "resource",
+                    "deal",
+                    "intel",
+                    "method"
+                ],
+                "hint": "只推送这些频道。可填子集，如 [\"apikey\",\"resource\"] 只收密钥与资源。完整：apikey/resource/deal/intel/method/other。other 默认不收。",
+                "items": {
+                    "type": "string"
+                }
+            },
+            "max_items_per_channel": {
+                "type": "int",
+                "default": 5,
+                "description": "【跨群聚合·规模】每频道最多保留条数",
+                "hint": "防止 50+ 群刷爆。超出按优先级截断（critical 优先保留）。默认 5。"
+            },
+            "max_candidates_per_group": {
+                "type": "int",
+                "default": 5,
+                "description": "【跨群聚合·规模】每群 L1 最多候选条数",
+                "hint": "每群提取的 candidates 上限，控制进入 L2 的扇出。critical 必留。默认 5。"
             },
             "monitored_groups": {
                 "type": "list",

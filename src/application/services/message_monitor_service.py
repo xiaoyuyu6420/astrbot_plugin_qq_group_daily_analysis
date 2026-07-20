@@ -476,8 +476,12 @@ class MessageMonitorService:
         logger.info(f"[Monitor] flush 触发：{len(batches)} 个群有待处理窗口")
 
         if self.config_manager.is_cross_group_enabled():
-            # 跨群聚合模式：合并所有群，输出一份简报
-            await self._flush_cross_group(batches)
+            # 跨群聚合模式：layered（分层）或 legacy（单次 LLM）
+            mode = self.config_manager.get_aggregation_mode()
+            if mode == "layered":
+                await self._flush_layered(batches)
+            else:
+                await self._flush_cross_group(batches)
         else:
             # 原有模式：逐群独立处理
             for group_id, messages in batches.items():
@@ -887,8 +891,89 @@ class MessageMonitorService:
     # 跨群聚合模式
     # ============================================================
 
+    async def _flush_layered(self, batches: dict[str, list[dict]]) -> None:
+        """【layered 模式，推荐】分层聚合 → 分类频道推送。
+
+        L1 每群本地规则提炼 candidates（无 LLM）
+        L2 跨群指纹去重 + 按 channel 聚合 + 预算截断
+        ChannelPacker 按 channels_enabled / split|merged 打成推送
+        """
+        from .layered_aggregation import (
+            ChannelPacker,
+            CrossGroupAggregator,
+            GroupCandidateExtractor,
+            extract_all_group_candidates,
+        )
+
+        watched = set(self.config_manager.get_monitored_qqs())
+        keywords = self.config_manager.get_monitor_extra_keywords()
+
+        # 1. L1：每群本地规则提炼
+        extractor = GroupCandidateExtractor(
+            patterns=BUILTIN_PATTERNS,
+            max_candidates_per_group=self.config_manager.get_max_candidates_per_group(),
+        )
+        candidates = extract_all_group_candidates(
+            batches=batches,
+            extractor=extractor,
+            watched_user_ids=watched,
+            extra_keywords=keywords,
+        )
+
+        total_msgs = sum(len(m) for m in batches.values())
+        logger.info(
+            f"[Monitor-Layered] L1 完成：{len(batches)} 群 · {total_msgs} 条消息"
+            f" · 提炼 {len(candidates)} 个 candidates"
+        )
+
+        if not candidates:
+            logger.info("[Monitor-Layered] 本轮无 candidates，跳过推送")
+            return
+
+        # 2. L2：跨群去重 + 频道聚合
+        aggregator = CrossGroupAggregator(
+            max_items_per_channel=self.config_manager.get_max_items_per_channel(),
+            enabled_channels=self.config_manager.get_channels_enabled(),
+        )
+        result = aggregator.aggregate(
+            candidates=candidates,
+            group_count=len(batches),
+            source_message_count=total_msgs,
+        )
+        logger.info(
+            f"[Monitor-Layered] L2 完成：输出 {len(result.items)} 条"
+            f" · 去重 {result.dropped_duplicates}"
+        )
+
+        if not result.items:
+            return
+
+        # 3. ChannelPacker 打包
+        packer = ChannelPacker(
+            push_mode=self.config_manager.get_channel_push_mode(),
+            interval_minutes=self.config_manager.get_flush_interval(),
+        )
+        messages = packer.pack(result)
+
+        # 4. 推送（复用 _send_alert，每条独立送）
+        # 平台 ID：取首个非空
+        platform_id = ""
+        for msgs in batches.values():
+            if msgs:
+                platform_id = msgs[-1].get("platform_id", "")
+                break
+
+        for idx, alert_text in enumerate(messages, 1):
+            await self._send_alert(
+                alert_text,
+                context_desc=f"分层简报 {idx}/{len(messages)}（{len(result.items)} 条情报）",
+                platform_id=platform_id,
+            )
+
     async def _flush_cross_group(self, batches: dict[str, list[dict]]) -> None:
-        """跨群聚合：合并所有群缓冲，LLM 聚类分析，输出统一简报。
+        """【legacy 模式】合并所有群原始消息 → 一次 LLM 聚类 → 统一简报。
+
+        群多时会因 4000 字硬截断丢失内容；保留作为兼容与回滚路径。
 
         Args:
             batches: {group_id: [消息列表]}，每个群一个列表

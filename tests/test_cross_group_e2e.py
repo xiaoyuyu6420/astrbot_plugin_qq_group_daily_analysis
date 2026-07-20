@@ -28,7 +28,11 @@ from tests.conftest import AstrBotConfig
 
 
 def make_config(**overrides) -> ConfigManager:
-    """构建 ConfigManager，默认 window 模式 + 跨群聚合"""
+    """构建 ConfigManager，默认 window 模式 + 跨群聚合（legacy LLM 路径）。
+
+    本文件测的是 legacy 单次 LLM 聚类路径，强制 aggregation_mode=legacy。
+    layered 分层聚合见 tests/test_layered_aggregation.py。
+    """
     base = {
         "message_monitor": {
             "enable_monitor": True,
@@ -41,6 +45,7 @@ def make_config(**overrides) -> ConfigManager:
             "max_context_messages": 50,
             "alert_admin_qqs": ["888"],
             "enable_cross_group": True,
+            "aggregation_mode": "legacy",  # 本文件锁定 legacy；layered 走 test_layered_aggregation
             "cooldown_seconds": 60,
             "dedup_minutes": 30,
             "keyword_batch_seconds": 0,  # 测试时禁用批量合并
@@ -634,5 +639,72 @@ async def test_noise_reducer_integrated_in_service():
     assert isinstance(service._noise_reducer, NoiseReducer)
     # 验证 send_callback 已注入
     assert service._noise_reducer._send_callback is not None
+
+    service.stop()
+
+
+# ============================================================
+# Layered 分层聚合 e2e（不走 LLM）
+# ============================================================
+
+
+@pytest.mark.asyncio
+async def test_layered_aggregation_pushes_without_llm():
+    """aggregation_mode=layered 时不调 LLM，靠规则即推 critical。"""
+    cfg = make_config(aggregation_mode="layered", monitored_qqs=["999"])
+    fake_adapter = FakeAdapter()
+    bot_mgr = FakeBotManager(fake_adapter)
+    service = MessageMonitorService(MagicMock(), cfg, bot_mgr)
+
+    events = [
+        FakeEvent("111", "groupA", "有人有 GPT key 吗", "张三"),
+        FakeEvent("999", "groupA", "sk-test1234567890abcdefghij", "目标"),
+        FakeEvent("999", "groupB", "sk-test1234567890abcdefghij", "目标"),  # 同一 key 跨群
+    ]
+    for evt in events:
+        await service.process(evt)
+
+    # 不 mock LLM：layered 不应调用 call_provider_with_retry
+    with patch(
+        "src.application.services.message_monitor_service.call_provider_with_retry",
+        new_callable=AsyncMock,
+        side_effect=AssertionError("layered 不应调 LLM"),
+    ):
+        await service._flush_all()
+
+    # split 模式：apikey 频道至少一条推送
+    assert len(fake_adapter.sent_messages) >= 1
+    text = fake_adapter.sent_messages[0]["text"]
+    assert "密钥" in text or "apikey" in text.lower()
+    assert "888" == fake_adapter.sent_messages[0]["user_id"]
+
+    service.stop()
+
+
+@pytest.mark.asyncio
+async def test_layered_merged_mode_single_message():
+    """channel_push_mode=merged 合并成一条总简报。"""
+    cfg = make_config(
+        aggregation_mode="layered",
+        channel_push_mode="merged",
+        monitored_qqs=["999"],
+    )
+    fake_adapter = FakeAdapter()
+    bot_mgr = FakeBotManager(fake_adapter)
+    service = MessageMonitorService(MagicMock(), cfg, bot_mgr)
+
+    events = [
+        FakeEvent("999", "groupA", "sk-test1234567890abcdefghij", "目标"),
+        FakeEvent("999", "groupB", "https://example.com/abc1234567890", "目标"),
+    ]
+    for evt in events:
+        await service.process(evt)
+
+    await service._flush_all()
+
+    assert len(fake_adapter.sent_messages) == 1
+    text = fake_adapter.sent_messages[0]["text"]
+    assert "密钥" in text
+    assert "资源" in text
 
     service.stop()
