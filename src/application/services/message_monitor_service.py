@@ -403,14 +403,20 @@ class MessageMonitorService:
         group_id: str,
         text: str,
     ) -> None:
-        """整窗汇总模式：不过滤发送者，所有人的消息都攒入缓冲区。"""
+        """整窗汇总模式：不过滤发送者，所有人的消息都攒入缓冲区。
+
+        【Phase 2: critical 旁路即时推送】
+        若 critical_instant_push 开启且本条命中 critical（apikey 等），
+        立即走降噪/冷却即时推一条，不必等 flush_interval。缓冲区仍照常攒。
+        """
+        text = text.strip()
         sender_name = self._safe_sender_name(event, sender_id)
         platform_id = str(event.get_platform_id() or "").strip()
 
         async with self._buffer_lock:
             self._buffer.setdefault(group_id, []).append(
                 {
-                    "text": text.strip(),
+                    "text": text,
                     "time": time.monotonic(),
                     "sender_id": sender_id,
                     "name": sender_name,
@@ -419,6 +425,60 @@ class MessageMonitorService:
             )
 
         self._ensure_flush_task()
+
+        # critical 旁路：window 模式下也允许 critical 秒推
+        if self.config_manager.is_critical_instant_push_enabled():
+            hits = self._regex_scan(text)
+            if hits:
+                priority = self._noise_reducer.classify_priority(hits, None)
+                if priority == NoiseReducer.PRIORITY_CRITICAL:
+                    await self._push_window_critical_now(
+                        sender_id=sender_id,
+                        sender_name=sender_name,
+                        group_id=group_id,
+                        text=text,
+                        hits=hits,
+                        platform_id=platform_id,
+                    )
+
+    async def _push_window_critical_now(
+        self,
+        sender_id: str,
+        sender_name: str,
+        group_id: str,
+        text: str,
+        hits: list[tuple[str, str]],
+        platform_id: str,
+    ) -> None:
+        """window 模式下 critical 命中：走冷却+去重即时推一条。
+
+        与 keyword critical 路径对齐：critical 豁免冷却但仍走去重指纹，
+        防止同一密钥在多个群被推 N 次。
+        """
+        if self._noise_reducer.check_dedup(text):
+            logger.debug(
+                f"[Monitor-Window] critical 去重命中，跳过即时推: {sender_id}@{group_id}"
+            )
+            return
+
+        alert = (
+            f"🚨 [即时·密钥/凭证] window 模式 critical 命中\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"👤 {sender_name}({sender_id}) @ 群{group_id}\n"
+            f"🎯 {'; '.join(desc for _, desc in hits[:3])}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📝 {text[:500]}{'…' if len(text) > 500 else ''}\n"
+            f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+        )
+        await self._send_alert(
+            alert,
+            context_desc=f"window critical 即时: {sender_name}@{group_id}",
+            platform_id=platform_id,
+        )
+        self._noise_reducer.mark_dedup(text)
+        logger.info(
+            f"[Monitor-Window] critical 即时推送完成: {sender_id}@{group_id}"
+        )
 
     # ============================================================
     # 后台 flush 任务
@@ -894,47 +954,76 @@ class MessageMonitorService:
     async def _flush_layered(self, batches: dict[str, list[dict]]) -> None:
         """【layered 模式，推荐】分层聚合 → 分类频道推送。
 
-        L1 每群本地规则提炼 candidates（无 LLM）
-        L2 跨群指纹去重 + 按 channel 聚合 + 预算截断
-        ChannelPacker 按 channels_enabled / split|merged 打成推送
+        Phase 1:
+          L1 每群本地规则提炼 candidates（无 LLM）
+          L2 跨群指纹去重 + 按 channel 聚合 + 预算截断
+          ChannelPacker 按 channels_enabled / split|merged 打成推送
+        Phase 2:
+          L1 可选 LLM 提炼（l1_use_llm，并发受 llm_semaphore 约束）
+          L2 超阈值分片提示（shard_threshold）
+          单条推送超长自动分页（push_max_chars）
         """
         from .layered_aggregation import (
             ChannelPacker,
             CrossGroupAggregator,
             GroupCandidateExtractor,
             extract_all_group_candidates,
+            extract_all_group_candidates_async,
         )
 
         watched = set(self.config_manager.get_monitored_qqs())
         keywords = self.config_manager.get_monitor_extra_keywords()
 
-        # 1. L1：每群本地规则提炼
+        # 1. L1：每群本地规则提炼（可选 LLM）
+        llm_refine = None
+        if self.config_manager.is_l1_use_llm_enabled():
+            llm_refine = self._l1_llm_refine
         extractor = GroupCandidateExtractor(
             patterns=BUILTIN_PATTERNS,
             max_candidates_per_group=self.config_manager.get_max_candidates_per_group(),
+            llm_refine_callback=llm_refine,
         )
-        candidates = extract_all_group_candidates(
-            batches=batches,
-            extractor=extractor,
-            watched_user_ids=watched,
-            extra_keywords=keywords,
-        )
+
+        if llm_refine is not None:
+            candidates = await extract_all_group_candidates_async(
+                batches=batches,
+                extractor=extractor,
+                watched_user_ids=watched,
+                extra_keywords=keywords,
+                parallelism=self.config_manager.get_l1_parallel_groups(),
+                llm_semaphore=getattr(self, "llm_semaphore", None),
+            )
+        else:
+            candidates = extract_all_group_candidates(
+                batches=batches,
+                extractor=extractor,
+                watched_user_ids=watched,
+                extra_keywords=keywords,
+            )
 
         total_msgs = sum(len(m) for m in batches.values())
         logger.info(
             f"[Monitor-Layered] L1 完成：{len(batches)} 群 · {total_msgs} 条消息"
             f" · 提炼 {len(candidates)} 个 candidates"
+            f" · LLM={'on' if llm_refine else 'off'}"
         )
 
         if not candidates:
             logger.info("[Monitor-Layered] 本轮无 candidates，跳过推送")
             return
 
-        # 2. L2：跨群去重 + 频道聚合
+        # 2. L2：跨群去重 + 频道聚合（+ 分片提示）
         aggregator = CrossGroupAggregator(
             max_items_per_channel=self.config_manager.get_max_items_per_channel(),
             enabled_channels=self.config_manager.get_channels_enabled(),
+            shard_threshold=self.config_manager.get_l2_shard_threshold(),
         )
+        if aggregator.should_shard(candidates):
+            logger.info(
+                f"[Monitor-Layered] L2 触发分片：candidates={len(candidates)}"
+                f" > threshold={self.config_manager.get_l2_shard_threshold()}"
+                f"，按频道分组聚合：{aggregator.shard_channels()}"
+            )
         result = aggregator.aggregate(
             candidates=candidates,
             group_count=len(batches),
@@ -948,12 +1037,17 @@ class MessageMonitorService:
         if not result.items:
             return
 
-        # 3. ChannelPacker 打包
+        # 3. ChannelPacker 打包（含分页）
         packer = ChannelPacker(
             push_mode=self.config_manager.get_channel_push_mode(),
             interval_minutes=self.config_manager.get_flush_interval(),
+            max_chars=self.config_manager.get_push_max_chars(),
         )
         messages = packer.pack(result)
+        logger.info(
+            f"[Monitor-Layered] 打包完成：{len(messages)} 条推送"
+            f"（max_chars={self.config_manager.get_push_max_chars()}）"
+        )
 
         # 4. 推送（复用 _send_alert，每条独立送）
         # 平台 ID：取首个非空
@@ -969,6 +1063,71 @@ class MessageMonitorService:
                 context_desc=f"分层简报 {idx}/{len(messages)}（{len(result.items)} 条情报）",
                 platform_id=platform_id,
             )
+
+    # ============================================================
+    # L1 LLM 提炼（Phase 2）
+    # ============================================================
+
+    async def _l1_llm_refine(
+        self, group_id: str, items: list
+    ) -> list:
+        """对单群 L1 candidates 做一次小 LLM 调用：
+        合并近义条目、补 reason、归一 channel。
+
+        失败时返回 None（extract_async 会回退规则结果）。
+        """
+        if not items:
+            return items
+        try:
+            from ...domain.entities.intel_item import IntelItem
+            from ...domain.services.intel_taxonomy import normalize_channel
+
+            # 构造紧凑输入：每条 50 字预览
+            preview_lines = []
+            for i, it in enumerate(items, 1):
+                content = (it.content or "")[:80].replace("\n", " ")
+                preview_lines.append(
+                    f"{i}. channel={it.channel} priority={it.priority} content={content}"
+                )
+            preview = "\n".join(preview_lines)
+
+            system = (
+                "你是情报分类助手。给你一个群里规则筛出的候选情报列表，"
+                "请合并近义条目、校准 channel（apikey/resource/deal/intel/method/other）、"
+                "为每条补一句简短 reason。返回 JSON。"
+            )
+            user = (
+                f"群 {group_id} 候选数 {len(items)}：\n{preview}\n\n"
+                "返回纯 JSON（不要 markdown 代码块），格式：\n"
+                '{"items": [{"index": 1, "channel": "apikey", "reason": "疑似 OpenAI Key"}]}\n'
+                "index 从 1 开始，对应输入序号。可省略（视为丢弃）。"
+            )
+
+            resp = await call_provider_with_retry(
+                context=self.context,
+                config_manager=self.config_manager,
+                prompt=user,
+                system_prompt=system,
+            )
+            if resp is None:
+                return items
+            raw = extract_response_text(resp).strip()
+            data = self._parse_llm_json(raw) or {}
+            verdicts = {int(v.get("index", 0)): v for v in (data.get("items") or []) if v}
+
+            refined: list[IntelItem] = []
+            for idx, it in enumerate(items, 1):
+                v = verdicts.get(idx)
+                if not v:
+                    continue  # LLM 主动丢弃
+                it.channel = normalize_channel(v.get("channel") or it.channel)
+                if v.get("reason"):
+                    it.reason = str(v.get("reason"))[:200]
+                refined.append(it)
+            return refined or items  # 若 LLM 全丢则保留原样
+        except Exception as e:
+            logger.warning(f"[L1-LLM] 群 {group_id} 提炼异常: {e}")
+            raise  # 让 extract_async 走回退
 
     async def _flush_cross_group(self, batches: dict[str, list[dict]]) -> None:
         """【legacy 模式】合并所有群原始消息 → 一次 LLM 聚类 → 统一简报。

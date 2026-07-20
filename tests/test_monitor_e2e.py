@@ -41,6 +41,8 @@ def make_config(**overrides) -> ConfigManager:
             "cooldown_seconds": 0,
             "dedup_minutes": 0,
             "keyword_batch_seconds": 0,
+            # Phase 2: critical 即时推送默认关，保持老 window 行为（攒到 flush 再推）
+            "critical_instant_push": False,
         }
     }
     for key, val in overrides.items():

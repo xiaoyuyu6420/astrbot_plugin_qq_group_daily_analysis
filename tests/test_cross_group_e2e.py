@@ -49,6 +49,7 @@ def make_config(**overrides) -> ConfigManager:
             "cooldown_seconds": 60,
             "dedup_minutes": 30,
             "keyword_batch_seconds": 0,  # 测试时禁用批量合并
+            "critical_instant_push": False,  # Phase 2: 保持老 window 行为，攒到 flush 再推
         }
     }
     for key, val in overrides.items():

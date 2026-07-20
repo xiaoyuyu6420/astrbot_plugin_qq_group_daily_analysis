@@ -644,6 +644,40 @@ class ConfigManager:
         except (TypeError, ValueError):
             return 5
 
+    def is_critical_instant_push_enabled(self) -> bool:
+        """window 模式下 critical 是否秒推（不等 flush）。默认 True。"""
+        return bool(
+            self._get_group("message_monitor").get("critical_instant_push", True)
+        )
+
+    def is_l1_use_llm_enabled(self) -> bool:
+        """L1 是否调用 LLM 做提炼/合并。默认 False（50+ 群省钱）。"""
+        return bool(self._get_group("message_monitor").get("l1_use_llm", False))
+
+    def get_l1_parallel_groups(self) -> int:
+        """L1 并发提炼的群数上限。默认 8。"""
+        try:
+            val = int(self._get_group("message_monitor").get("l1_parallel_groups", 8))
+            return max(1, val)
+        except (TypeError, ValueError):
+            return 8
+
+    def get_l2_shard_threshold(self) -> int:
+        """L2 触发分片的 candidate 阈值。默认 60（超过则按频道分批调 LLM）。"""
+        try:
+            val = int(self._get_group("message_monitor").get("l2_shard_threshold", 60))
+            return max(10, val)
+        except (TypeError, ValueError):
+            return 60
+
+    def get_push_max_chars(self) -> int:
+        """单条推送最大字符数，超出分页。默认 1800。"""
+        try:
+            val = int(self._get_group("message_monitor").get("push_max_chars", 1800))
+            return max(500, val)
+        except (TypeError, ValueError):
+            return 1800
+
     def set_scheduled_group_list(self, groups: list[str]):
         """设置定时分析目标群列表"""
         self._ensure_group("auto_analysis")["scheduled_group_list"] = groups

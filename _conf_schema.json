@@ -99,6 +99,36 @@
                 "description": "【跨群聚合·规模】每群 L1 最多候选条数",
                 "hint": "每群提取的 candidates 上限，控制进入 L2 的扇出。critical 必留。默认 5。"
             },
+            "critical_instant_push": {
+                "type": "bool",
+                "default": true,
+                "description": "【Phase2】critical 秒推（window 也立即推）",
+                "hint": "window 模式下，命中 API Key 等也立即私聊推一条，不等 flush_interval。仍走去重防同密钥多群重复推。默认开。"
+            },
+            "l1_use_llm": {
+                "type": "bool",
+                "default": false,
+                "description": "【Phase2】L1 用 LLM 提炼",
+                "hint": "开启后 L1 每群调用一次小 LLM 合并/打 reason。50+ 群默认关（省钱）；追求质量可开。关时纯规则提炼。"
+            },
+            "l1_parallel_groups": {
+                "type": "int",
+                "default": 8,
+                "description": "【Phase2】L1 并发群数上限",
+                "hint": "l1_use_llm=true 时 LLM 提炼的并发群数。受 llm_semaphore 全局限制。默认 8。"
+            },
+            "l2_shard_threshold": {
+                "type": "int",
+                "default": 60,
+                "description": "【Phase2】L2 分片阈值",
+                "hint": "candidates 数超过此值时，L2 按频道分批处理，避免一次 prompt 过大。默认 60。"
+            },
+            "push_max_chars": {
+                "type": "int",
+                "default": 1800,
+                "description": "【Phase2】单条推送字符上限",
+                "hint": "超出此长度的简报自动分页成多条。防 QQ 等平台长文本截断。默认 1800。"
+            },
             "monitored_groups": {
                 "type": "list",
                 "description": "【范围】监控群列表（必填）",

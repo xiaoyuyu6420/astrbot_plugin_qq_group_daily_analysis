@@ -1,26 +1,29 @@
 """
-分层跨群聚合（Phase 1）
+分层跨群聚合（Phase 1 + Phase 2）
 
-L1: 每群本地提炼 candidates（正则/规则，默认不调 LLM）
-L2: 跨群指纹去重 + 按 channel 聚合 + 预算截断
-ChannelPacker: split/merged 打成推送文案
+L1: 每群本地提炼 candidates（正则/规则；Phase 2 可选 LLM 合并/打 reason）
+L2: 跨群指纹去重 + 按 channel 聚合 + 预算截断（Phase 2: 超阈值分片）
+ChannelPacker: split/merged 打成推送文案（Phase 2: 单条超长分页）
 
 设计目标：50+ 群时不全量原始聊天塞一次 LLM；critical 不丢。
 """
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import json
 import re
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Iterable
+from typing import Any, Iterable
 
 from ...domain.entities.intel_item import IntelItem
 from ...domain.services.intel_taxonomy import (
     ALL_CHANNELS,
+    CHANNEL_APIKEY,
     CHANNEL_OTHER,
     DEFAULT_ENABLED_CHANNELS,
     PRIORITY_CRITICAL,
@@ -33,6 +36,7 @@ from ...domain.services.intel_taxonomy import (
     normalize_channel,
     priority_rank,
 )
+from ...utils.logger import logger
 
 
 def content_fingerprint(text: str) -> str:
@@ -59,15 +63,42 @@ class AggregationResult:
 
 
 class GroupCandidateExtractor:
-    """L1：从单群窗口消息中提取 candidates（无 LLM）。"""
+    """L1：从单群窗口消息中提取 candidates。
+
+    Phase 1: 纯规则（正则+关键词），无 LLM。
+    Phase 2: 可选 llm_refine_callback，对每群 candidates 做合并/打 reason。
+    """
 
     def __init__(
         self,
         patterns: list[tuple[re.Pattern, str, str]],
         max_candidates_per_group: int = 5,
+        llm_refine_callback=None,
     ):
         self.patterns = patterns
         self.max_candidates_per_group = max(1, int(max_candidates_per_group))
+        self._llm_refine_callback = llm_refine_callback
+
+    async def extract_async(
+        self,
+        group_id: str,
+        messages: list[dict],
+        watched_user_ids: set[str] | None = None,
+        extra_keywords: list[str] | None = None,
+    ) -> list[IntelItem]:
+        """异步版：若配置了 llm_refine_callback，会在规则提取后做一次 LLM 提炼。"""
+        items = self.extract(group_id, messages, watched_user_ids, extra_keywords)
+        if not items or self._llm_refine_callback is None:
+            return items
+        try:
+            refined = await self._llm_refine_callback(group_id, items)
+            if refined:
+                # 仍受预算约束
+                refined.sort(key=lambda x: (priority_rank(x.priority), -len(x.content)))
+                return refined[: self.max_candidates_per_group]
+        except Exception as e:
+            logger.warning(f"[L1-LLM] 群 {group_id} LLM 提炼失败，回退规则结果: {e}")
+        return items
 
     def extract(
         self,
@@ -173,12 +204,17 @@ class GroupCandidateExtractor:
 
 
 class CrossGroupAggregator:
-    """L2：跨群 candidates 去重 + 分类聚合 + 预算截断。"""
+    """L2：跨群 candidates 去重 + 分类聚合 + 预算截断。
+
+    Phase 2: 超过 shard_threshold 时返回分片提示（每片一组频道），
+    调用方可分批喂给 LLM 做聚类。
+    """
 
     def __init__(
         self,
         max_items_per_channel: int = 5,
         enabled_channels: Iterable[str] | None = None,
+        shard_threshold: int = 60,
     ):
         self.max_items_per_channel = max(1, int(max_items_per_channel))
         enabled = list(enabled_channels) if enabled_channels is not None else list(
@@ -187,6 +223,7 @@ class CrossGroupAggregator:
         self.enabled_channels = [c for c in enabled if c in ALL_CHANNELS] or list(
             DEFAULT_ENABLED_CHANNELS
         )
+        self.shard_threshold = max(10, int(shard_threshold))
 
     def aggregate(
         self,
@@ -206,8 +243,8 @@ class CrossGroupAggregator:
                 if item.priority != PRIORITY_CRITICAL:
                     continue
                 # critical 强制映射进 apikey 频道（若启用）
-                if "apikey" in self.enabled_channels:
-                    item.channel = "apikey"
+                if CHANNEL_APIKEY in self.enabled_channels:
+                    item.channel = CHANNEL_APIKEY
                 else:
                     continue
 
@@ -253,14 +290,45 @@ class CrossGroupAggregator:
             candidate_count=len(candidates),
         )
 
+    def should_shard(self, candidates: list[IntelItem]) -> bool:
+        """是否需要分片（候选数超阈值）。"""
+        return len(candidates) > self.shard_threshold
+
+    def shard_channels(self) -> list[list[str]]:
+        """把 enabled_channels 拆成多片，每片一组频道，便于分批处理。
+
+        简单策略：critical-sensitive 优先单独一片，其余按 2 个一组。
+        """
+        chans = list(self.enabled_channels)
+        if not chans:
+            return [list(DEFAULT_ENABLED_CHANNELS)]
+        # apikey 单独一片（critical 优先处理）
+        shards: list[list[str]] = []
+        if CHANNEL_APIKEY in chans:
+            shards.append([CHANNEL_APIKEY])
+            chans = [c for c in chans if c != CHANNEL_APIKEY]
+        # 其余两两一组
+        for i in range(0, len(chans), 2):
+            shards.append(chans[i : i + 2])
+        return shards
+
 
 class ChannelPacker:
-    """把聚合结果打成一条或多条推送文本。"""
+    """把聚合结果打成一条或多条推送文本。
 
-    def __init__(self, push_mode: str = "split", interval_minutes: int = 10):
+    Phase 2: 单条超 push_max_chars 自动分页，页内保持频道完整。
+    """
+
+    def __init__(
+        self,
+        push_mode: str = "split",
+        interval_minutes: int = 10,
+        max_chars: int = 1800,
+    ):
         mode = (push_mode or "split").strip().lower()
         self.push_mode = mode if mode in ("split", "merged") else "split"
         self.interval_minutes = max(1, int(interval_minutes))
+        self.max_chars = max(500, int(max_chars))
 
     def pack(self, result: AggregationResult) -> list[str]:
         if not result.items:
@@ -268,7 +336,38 @@ class ChannelPacker:
         if self.push_mode == "merged":
             text = self._pack_merged(result)
             return [text] if text else []
-        return self._pack_split(result)
+        # split: 每频道一条 + 单条超长分页
+        raw_messages = self._pack_split(result)
+        return self._paginate(raw_messages)
+
+    def _paginate(self, messages: list[str]) -> list[str]:
+        out: list[str] = []
+        for msg in messages:
+            if len(msg) <= self.max_chars:
+                out.append(msg)
+                continue
+            # 按 item 行切片
+            lines = msg.split("\n")
+            pages: list[str] = []
+            current: list[str] = []
+            current_len = 0
+            for ln in lines:
+                added = len(ln) + 1
+                if current_len + added > self.max_chars and current:
+                    pages.append("\n".join(current))
+                    current = []
+                    current_len = 0
+                current.append(ln)
+                current_len += added
+            if current:
+                pages.append("\n".join(current))
+            total = len(pages)
+            if total <= 1:
+                out.append(msg)
+                continue
+            for idx, page in enumerate(pages, 1):
+                out.append(f"{page}\n📄 第 {idx}/{total} 页")
+        return out
 
     def _pack_split(self, result: AggregationResult) -> list[str]:
         by_channel: dict[str, list[IntelItem]] = defaultdict(list)
@@ -358,7 +457,7 @@ def extract_all_group_candidates(
     watched_user_ids: set[str] | None = None,
     extra_keywords: list[str] | None = None,
 ) -> list[IntelItem]:
-    """对多群 buffer 跑 L1，合并 candidates。"""
+    """对多群 buffer 跑 L1（同步、无 LLM），合并 candidates。"""
     all_items: list[IntelItem] = []
     for group_id, messages in batches.items():
         all_items.extend(
@@ -369,4 +468,49 @@ def extract_all_group_candidates(
                 extra_keywords=extra_keywords,
             )
         )
+    return all_items
+
+
+async def extract_all_group_candidates_async(
+    batches: dict[str, list[dict]],
+    extractor: GroupCandidateExtractor,
+    watched_user_ids: set[str] | None = None,
+    extra_keywords: list[str] | None = None,
+    parallelism: int = 8,
+    llm_semaphore: asyncio.Semaphore | None = None,
+) -> list[IntelItem]:
+    """对多群 buffer 跑 L1（异步、可选 LLM 提炼），按 parallelism 并发。
+
+    受 llm_semaphore（若提供）全局约束，防止 50+ 群同时打爆 LLM。
+    """
+    if extractor._llm_refine_callback is None:
+        # 无 LLM：直接走同步路径，避免事件循环开销
+        return extract_all_group_candidates(
+            batches=batches,
+            extractor=extractor,
+            watched_user_ids=watched_user_ids,
+            extra_keywords=extra_keywords,
+        )
+
+    sem = llm_semaphore or asyncio.Semaphore(max(1, parallelism))
+
+    async def _one(group_id: str, messages: list[dict]) -> list[IntelItem]:
+        async with sem:
+            return await extractor.extract_async(
+                group_id=group_id,
+                messages=messages,
+                watched_user_ids=watched_user_ids,
+                extra_keywords=extra_keywords,
+            )
+
+    tasks = [_one(gid, msgs) for gid, msgs in batches.items() if msgs]
+    if not tasks:
+        return []
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    all_items: list[IntelItem] = []
+    for r in results:
+        if isinstance(r, Exception):
+            logger.warning(f"[L1-Async] 单群提炼失败: {r}")
+            continue
+        all_items.extend(r)
     return all_items

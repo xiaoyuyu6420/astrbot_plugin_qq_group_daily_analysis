@@ -1,6 +1,8 @@
 """分层聚合 + 分类频道单测。"""
 
+import asyncio
 import re
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -346,3 +348,253 @@ def test_50_groups_does_not_lose_critical():
     assert result.dropped_duplicates == 49
     # 合并了 50 个来源群
     assert len(result.items[0].meta.get("groups", [])) == 50
+
+
+# ---------- Phase 2: L2 分片 ----------
+
+
+def test_l2_should_shard_when_over_threshold():
+    agg = CrossGroupAggregator(
+        max_items_per_channel=100,
+        enabled_channels=["apikey", "resource"],
+        shard_threshold=10,
+    )
+    cands = []
+    for i in range(20):
+        cands.append(
+            IntelItem(
+                content=f"sk-unique-{i:03d}abcdefghijklmnopqrst",
+                channel=CHANNEL_APIKEY,
+                priority=PRIORITY_CRITICAL,
+                source_user_id="1",
+                source_group_id=f"g{i}",
+            )
+        )
+    assert agg.should_shard(cands) is True
+
+
+def test_l2_shard_channels_apikey_alone():
+    agg = CrossGroupAggregator(
+        enabled_channels=["apikey", "resource", "deal", "intel"],
+    )
+    shards = agg.shard_channels()
+    # apikey 单独一片
+    assert shards[0] == ["apikey"]
+    # 其余按 2 个一组
+    flat = [c for s in shards[1:] for c in s]
+    assert "resource" in flat and "deal" in flat and "intel" in flat
+    for s in shards[1:]:
+        assert len(s) <= 2
+
+
+def test_l2_shard_channels_without_apikey():
+    agg = CrossGroupAggregator(enabled_channels=["resource", "deal", "intel"])
+    shards = agg.shard_channels()
+    flat = [c for s in shards for c in s]
+    assert "apikey" not in flat
+    assert all(len(s) <= 2 for s in shards)
+
+
+# ---------- Phase 2: 简报分页 ----------
+
+
+def test_packer_pagination_splits_long_message():
+    """单频道条目很多 → 单条超 max_chars → 分页。"""
+    cands = []
+    for i in range(30):
+        cands.append(
+            IntelItem(
+                content=f"https://example.com/long-resource-path-{i}-padding-1234567890",
+                channel=CHANNEL_RESOURCE,
+                priority=PRIORITY_NORMAL,
+                source_user_id="1",
+                source_user_name=f"用户{i}",
+                source_group_id=f"g{i % 5}",
+            )
+        )
+    agg = CrossGroupAggregator(max_items_per_channel=30)
+    result = agg.aggregate(cands, group_count=5)
+    packer = ChannelPacker(push_mode="split", interval_minutes=10, max_chars=500)
+    messages = packer.pack(result)
+    # 应该分页（每条 ≤ ~500 + 页脚）
+    assert len(messages) > 1
+    # 每页带页码标记
+    assert all("页" in m for m in messages)
+
+
+def test_packer_pagination_off_when_short():
+    cands = [
+        IntelItem(
+            content="sk-abcdefghijklmnopqrst",
+            channel=CHANNEL_APIKEY,
+            priority=PRIORITY_CRITICAL,
+            source_user_id="1",
+            source_group_id="gA",
+        )
+    ]
+    agg = CrossGroupAggregator(max_items_per_channel=5)
+    result = agg.aggregate(cands, group_count=1)
+    packer = ChannelPacker(push_mode="split", max_chars=1800)
+    messages = packer.pack(result)
+    assert len(messages) == 1
+    assert "页" not in messages[0]
+
+
+# ---------- Phase 2: L1 LLM 提炼回调 ----------
+
+
+@pytest.mark.asyncio
+async def test_l1_llm_refine_callback_invoked():
+    """配置 callback 后 extract_async 走 LLM 路径。"""
+    calls = []
+
+    async def refine(group_id, items):
+        calls.append((group_id, len(items)))
+        # 模拟 LLM 只保留第一条 + 改 reason
+        if items:
+            items[0].reason = "LLM 校准"
+            return [items[0]]
+        return items
+
+    extractor = GroupCandidateExtractor(
+        patterns=PATTERNS,
+        max_candidates_per_group=5,
+        llm_refine_callback=refine,
+    )
+    msgs = [
+        _msg("999", "gA", "sk-aaaaaaaaaaaaaaaaaaaaaa"),
+        _msg("999", "gA", "https://example.com/1234567890"),
+    ]
+    items = await extractor.extract_async("gA", msgs, watched_user_ids={"999"})
+    assert calls == [("gA", 2)]
+    assert len(items) == 1
+    assert items[0].reason == "LLM 校准"
+
+
+@pytest.mark.asyncio
+async def test_l1_llm_refine_failure_falls_back():
+    """LLM 提炼抛异常 → 回退规则结果。"""
+
+    async def refine(group_id, items):
+        raise RuntimeError("LLM down")
+
+    extractor = GroupCandidateExtractor(
+        patterns=PATTERNS,
+        max_candidates_per_group=5,
+        llm_refine_callback=refine,
+    )
+    msgs = [_msg("999", "gA", "sk-aaaaaaaaaaaaaaaaaaaaaa")]
+    items = await extractor.extract_async("gA", msgs, watched_user_ids={"999"})
+    # 回退规则结果：1 条 critical
+    assert len(items) == 1
+    assert items[0].priority == PRIORITY_CRITICAL
+
+
+@pytest.mark.asyncio
+async def test_extract_async_parallelism_with_llm():
+    """多群并行 L1 LLM 提炼，并发受 sem 控制。"""
+    started = 0
+    max_concurrent = 0
+
+    async def refine(group_id, items):
+        nonlocal started, max_concurrent
+        started += 1
+        max_concurrent = max(max_concurrent, started)
+        await asyncio.sleep(0.01)
+        started -= 1
+        return items
+
+    extractor = GroupCandidateExtractor(
+        patterns=PATTERNS,
+        max_candidates_per_group=5,
+        llm_refine_callback=refine,
+    )
+    batches = {}
+    for gi in range(10):
+        batches[f"g{gi}"] = [_msg("999", f"g{gi}", "sk-aaaaaaaaaaaaaaaaaaaaaa")]
+
+    from src.application.services.layered_aggregation import (
+        extract_all_group_candidates_async,
+    )
+
+    items = await extract_all_group_candidates_async(
+        batches=batches,
+        extractor=extractor,
+        watched_user_ids={"999"},
+        parallelism=3,
+    )
+    assert len(items) == 10
+    # 并发上限不超过 parallelism（可能等于，也可能因为调度略低）
+    assert max_concurrent <= 3
+
+
+# ---------- Phase 2: critical 旁路 ----------
+
+
+@pytest.mark.asyncio
+async def test_window_critical_instant_push():
+    """window 模式下命中 critical → 立即推一条，不等 flush。"""
+    from src.application.services.message_monitor_service import (
+        MessageMonitorService,
+    )
+    from src.infrastructure.config.config_manager import ConfigManager
+    from tests.conftest import AstrBotConfig
+
+    cfg = ConfigManager(
+        AstrBotConfig(
+            {
+                "message_monitor": {
+                    "enable_monitor": True,
+                    "monitor_mode": "window",
+                    "window_scope": "per_group",
+                    "monitored_groups": ["gA"],
+                    "monitored_qqs": ["999"],
+                    "alert_admin_qqs": ["888"],
+                    "critical_instant_push": True,
+                    "cooldown_seconds": 0,
+                    "dedup_minutes": 0,
+                    "flush_interval": 999,  # 测试期间不要触发 flush
+                }
+            }
+        )
+    )
+
+    class FakeAdapter:
+        def __init__(self):
+            self.sent = []
+
+        async def send_private(self, user_id, text="", image_path=""):
+            self.sent.append({"user_id": user_id, "text": text})
+            return True
+
+    class FakeBotMgr:
+        def __init__(self, adapter):
+            self._a = adapter
+
+        def get_adapter(self, pid):
+            return self._a
+
+        def get_all_adapters(self):
+            return [self._a]
+
+    adapter = FakeAdapter()
+    bot_mgr = FakeBotMgr(adapter)
+    service = MessageMonitorService(MagicMock(), cfg, bot_mgr)
+
+    evt = type(
+        "E",
+        (),
+        {
+            "get_sender_id": lambda self: "999",
+            "get_group_id": lambda self: "gA",
+            "get_platform_id": lambda self: "aiocqhttp:default",
+            "get_sender_name": lambda self: "目标",
+            "message_str": "sk-aaaaaaaaaaaaaaaaaaaaaa",
+            "message_obj": MagicMock(message=[], sender=MagicMock(nickname="目标")),
+        },
+    )()
+
+    await service.process(evt)
+    assert len(adapter.sent) == 1
+    assert "密钥" in adapter.sent[0]["text"] or "apikey" in adapter.sent[0]["text"].lower()
+    service.stop()
