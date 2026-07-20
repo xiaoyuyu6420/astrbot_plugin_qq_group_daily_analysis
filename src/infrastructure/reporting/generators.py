@@ -10,6 +10,7 @@ import html
 import json
 import os
 import re
+import time
 from dataclasses import asdict, is_dataclass
 from datetime import date, datetime
 from enum import Enum
@@ -175,119 +176,212 @@ class ReportGenerator(IReportGenerator):
 
             # 检查HTML内容是否有效
             if not html_content:
-                logger.error("图片报告HTML渲染失败：返回空内容")
+                logger.error(
+                    f"[T2I] 群 {group_id} 图片报告 HTML 渲染失败：返回空内容"
+                )
                 return None, None
 
-            logger.info(f"图片报告HTML渲染完成，长度: {len(html_content)} 字符")
+            html_chars = len(html_content)
+            html_kb = html_chars / 1024
+            font_source = self.config_manager.get_t2i_font_source()
+            template_name = self.config_manager.get_report_template()
+            logger.info(
+                f"[T2I] 群 {group_id} HTML 准备完成: "
+                f"模板={template_name}, 长度={html_chars} 字符 (~{html_kb:.1f} KB), "
+                f"字体源={font_source}, "
+                f"render_func={getattr(html_render_func, '__name__', type(html_render_func).__name__)}"
+            )
+            if html_kb > 1500:
+                logger.warning(
+                    f"[T2I] HTML 体积偏大 (~{html_kb:.1f} KB)，本地渲染容易超时/OOM。"
+                    f" 建议：调大 t2i_r*_timeout、降低 device_scale、改用 jpeg，或换 simple 模板"
+                )
 
             # 从配置中获取两轮渲染策略
             render_strategies = self.config_manager.get_t2i_rendering_strategies()
 
             # 使用信号量控制并发进入渲染引擎
             async with self._render_semaphore:
-                logger.debug(f"[T2I] 已进入渲染队列 (群: {group_id})")
+                logger.info(
+                    f"[T2I] 群 {group_id} 进入渲染队列，共 {len(render_strategies)} 轮策略"
+                )
 
                 last_exception = None
+                attempt_summaries: list[str] = []
 
                 for attempt, image_options in enumerate(render_strategies, 1):
+                    # 拷贝一份，避免 pop quality 污染后续轮次
+                    options = dict(image_options)
+                    if options.get("type") == "png":
+                        options.pop("quality", None)
+
+                    timeout_ms = options.get("timeout", "?")
+                    img_type = options.get("type", "?")
+                    scale = options.get("device_scale_factor_level", "?")
+                    logger.info(
+                        f"[T2I] 群 {group_id} 第 {attempt}/{len(render_strategies)} 轮: "
+                        f"type={img_type}, scale={scale}, timeout={timeout_ms}ms, "
+                        f"options={options}"
+                    )
+
+                    t0 = time.monotonic()
                     try:
-                        # Cleanse options
-                        if image_options.get("type") == "png":
-                            image_options.pop("quality", None)
-
-                        logger.info(f"正在尝试第 {attempt} 轮渲染策略: {image_options}")
-
                         # 改为获取 bytes 数据，避免 OneBot 无法访问内部 URL
                         image_data = await html_render_func(
                             html_content,  # 渲染后的HTML内容
                             {},  # 空数据字典，因为数据已包含在HTML中
                             False,  # return_url=False，直接获取图片数据
-                            image_options,
+                            options,
+                        )
+                        elapsed_ms = int((time.monotonic() - t0) * 1000)
+
+                        if image_data is None:
+                            summary = (
+                                f"轮次{attempt}: 返回 None "
+                                f"(耗时 {elapsed_ms}ms, type={img_type})"
+                            )
+                            attempt_summaries.append(summary)
+                            logger.warning(f"[T2I] {summary}")
+                            continue
+
+                        data_desc = self._describe_render_result(image_data)
+                        logger.info(
+                            f"[T2I] 群 {group_id} 第 {attempt} 轮返回: "
+                            f"{data_desc}, 耗时 {elapsed_ms}ms"
                         )
 
-                        if image_data:
-                            # 校验是否为合法图片（防止 T2I 返回 500 错误 HTML 字符流）
-                            is_valid = False
-                            actual_data_head = None
+                        # 校验是否为合法图片（防止 T2I 返回 500 错误 HTML 字符流）
+                        is_valid = False
+                        actual_data_head = None
+                        invalid_reason = None
 
-                            if isinstance(image_data, bytes):
-                                actual_data_head = image_data[:10]
-                            elif isinstance(image_data, str) and os.path.exists(
-                                image_data
+                        if isinstance(image_data, bytes):
+                            actual_data_head = image_data[:10]
+                        elif isinstance(image_data, str) and os.path.exists(image_data):
+                            try:
+                                with open(image_data, "rb") as f:
+                                    actual_data_head = f.read(10)
+                            except Exception as e:
+                                invalid_reason = f"读取临时文件失败: {e}"
+                                logger.warning(f"[T2I] {invalid_reason}")
+                        elif isinstance(image_data, str):
+                            # 可能是 URL 或 base64 字符串
+                            if image_data.startswith(
+                                ("http://", "https://", "base64://", "data:image")
                             ):
-                                try:
-                                    with open(image_data, "rb") as f:
-                                        actual_data_head = f.read(10)
-                                except Exception as e:
-                                    logger.warning(f"读取图片临时文件失败: {e}")
+                                is_valid = True
+                            else:
+                                invalid_reason = (
+                                    f"返回字符串既不是已存在路径也不是 URL/base64 "
+                                    f"(前80字: {image_data[:80]!r})"
+                                )
 
-                            if actual_data_head:
-                                # 检查 magic numbers (JPEG: FF D8, PNG: 89 50 4E 47)
-                                if actual_data_head.startswith(
-                                    b"\xff\xd8"
-                                ) or actual_data_head.startswith(b"\x89PNG"):
-                                    is_valid = True
-                                else:
-                                    # 尝试解析 HTML 错误（如 502 Bad Gateway）
-                                    html_error = None
-                                    if isinstance(image_data, bytes):
-                                        html_error = self._extract_html_error_summary(
-                                            image_data
-                                        )
-                                    elif isinstance(image_data, str) and os.path.exists(
-                                        image_data
-                                    ):
-                                        try:
-                                            with open(image_data, "rb") as f:
-                                                # 读取前 4KB 即可识别 HTML 错误
-                                                html_error = (
-                                                    self._extract_html_error_summary(
-                                                        f.read(4096)
-                                                    )
-                                                )
-                                        except Exception:
-                                            pass
-
-                                    if html_error:
-                                        logger.warning(
-                                            f"[T2I] 渲染引擎返回了错误页面而非图片: {html_error}"
-                                        )
-                                    else:
-                                        logger.warning(
-                                            f"渲染结果似乎不是有效的图片数据 (头部: {actual_data_head.hex()})"
-                                        )
-
-                            if is_valid:
+                        if actual_data_head is not None and not is_valid:
+                            # 检查 magic numbers (JPEG: FF D8, PNG: 89 50 4E 47)
+                            if actual_data_head.startswith(
+                                b"\xff\xd8"
+                            ) or actual_data_head.startswith(b"\x89PNG"):
+                                is_valid = True
+                            else:
+                                html_error = None
                                 if isinstance(image_data, bytes):
-                                    b64 = base64.b64encode(image_data).decode("utf-8")
-                                    image_url = f"base64://{b64}"
-                                    logger.info(
-                                        f"图片生成成功 (轮次 {attempt}): [Base64 Data {len(image_data)} bytes]"
+                                    html_error = self._extract_html_error_summary(
+                                        image_data
                                     )
-                                    return image_url, html_content
-                                elif isinstance(image_data, str):
-                                    logger.info(
-                                        f"图片生成成功 (轮次 {attempt}): {image_data}"
-                                    )
-                                    return image_data, html_content
+                                elif isinstance(image_data, str) and os.path.exists(
+                                    image_data
+                                ):
+                                    try:
+                                        with open(image_data, "rb") as f:
+                                            html_error = (
+                                                self._extract_html_error_summary(
+                                                    f.read(4096)
+                                                )
+                                            )
+                                    except Exception:
+                                        pass
 
-                        logger.warning(
-                            f"渲染轮次 {attempt} ({image_options['type']}) 返回了无效或空数据"
+                                if html_error:
+                                    invalid_reason = (
+                                        f"返回错误页而非图片: {html_error}"
+                                    )
+                                else:
+                                    invalid_reason = (
+                                        f"非图片 magic (头部 hex={actual_data_head.hex()})"
+                                    )
+
+                        if is_valid:
+                            if isinstance(image_data, bytes):
+                                b64 = base64.b64encode(image_data).decode("utf-8")
+                                image_url = f"base64://{b64}"
+                                logger.info(
+                                    f"[T2I] 群 {group_id} 图片生成成功 "
+                                    f"(轮次 {attempt}, {elapsed_ms}ms): "
+                                    f"{len(image_data)} bytes base64"
+                                )
+                                return image_url, html_content
+                            elif isinstance(image_data, str):
+                                logger.info(
+                                    f"[T2I] 群 {group_id} 图片生成成功 "
+                                    f"(轮次 {attempt}, {elapsed_ms}ms): {image_data}"
+                                )
+                                return image_data, html_content
+
+                        summary = (
+                            f"轮次{attempt}: 无效数据 "
+                            f"({invalid_reason or '未知原因'}, "
+                            f"耗时 {elapsed_ms}ms, type={img_type})"
                         )
+                        attempt_summaries.append(summary)
+                        logger.warning(f"[T2I] {summary}")
 
                     except Exception as e:
-                        logger.warning(f"渲染轮次 {attempt} 失败: {e}")
+                        elapsed_ms = int((time.monotonic() - t0) * 1000)
+                        category, hint = self._classify_t2i_error(e)
+                        summary = (
+                            f"轮次{attempt}: 异常[{category}] "
+                            f"{type(e).__name__}: {e} "
+                            f"(耗时 {elapsed_ms}ms, type={img_type}, timeout={timeout_ms}ms)"
+                        )
+                        attempt_summaries.append(summary)
                         last_exception = e
+                        logger.warning(f"[T2I] {summary}")
+                        logger.warning(f"[T2I] 诊断提示: {hint}")
                         if attempt < len(render_strategies):
-                            logger.info("准备尝试下一轮回退策略")
+                            logger.info(
+                                f"[T2I] 准备尝试第 {attempt + 1} 轮回退策略"
+                            )
                         continue
 
                 # 如果所有策略都失败
-                logger.error(f"所有渲染尝试都失败。最后一个错误: {last_exception}")
+                logger.error(
+                    f"[T2I] 群 {group_id} 全部 {len(render_strategies)} 轮渲染失败。"
+                    f" HTML≈{html_kb:.1f}KB, 字体源={font_source}, 模板={template_name}"
+                )
+                for s in attempt_summaries:
+                    logger.error(f"[T2I]   · {s}")
+                if last_exception is not None:
+                    _, final_hint = self._classify_t2i_error(last_exception)
+                    logger.error(f"[T2I] 最终诊断: {final_hint}")
+                else:
+                    logger.error(
+                        "[T2I] 最终诊断: 引擎未抛异常但返回了空/非法数据。"
+                        " 常见原因: 1) 远程 T2I 端点返回 HTML 错误页"
+                        " 2) Playwright 启动失败但被吞掉"
+                        " 3) 超时后返回空结果。"
+                        " 请检查 AstrBot 系统配置中的 T2I 端点，"
+                        "并确认部署机已执行 `playwright install chromium`"
+                    )
                 return None, html_content
 
         except Exception as e:
-            logger.error(f"生成图片报告过程发生严重错误: {e}", exc_info=True)
+            category, hint = self._classify_t2i_error(e)
+            logger.error(
+                f"[T2I] 群 {group_id} 生成图片报告发生严重错误 "
+                f"[{category}] {type(e).__name__}: {e}",
+                exc_info=True,
+            )
+            logger.error(f"[T2I] 诊断提示: {hint}")
             return None, html_content
         finally:
             # 清理本次运行的 session 和缓存
@@ -1038,6 +1132,122 @@ class ReportGenerator(IReportGenerator):
                 logger.debug("头像缓存已关闭")
         except Exception as e:
             logger.warning(f"关闭头像缓存失败: {e}")
+
+    @staticmethod
+    def _describe_render_result(image_data) -> str:
+        """描述 html_render 返回值，便于日志诊断。"""
+        if image_data is None:
+            return "None"
+        if isinstance(image_data, bytes):
+            head = image_data[:8].hex() if image_data else ""
+            return f"bytes(len={len(image_data)}, head={head})"
+        if isinstance(image_data, str):
+            exists = os.path.exists(image_data)
+            preview = image_data if len(image_data) <= 120 else image_data[:120] + "..."
+            return f"str(len={len(image_data)}, path_exists={exists}, preview={preview!r})"
+        return f"{type(image_data).__name__}({image_data!r})"
+
+    @staticmethod
+    def _classify_t2i_error(exc: BaseException) -> tuple[str, str]:
+        """把渲染异常归类，并给出可操作的排查提示。
+
+        Returns:
+            (category, hint)
+        """
+        msg = str(exc) or ""
+        name = type(exc).__name__
+        combined = f"{name} {msg}".lower()
+
+        # 超时
+        if (
+            "timeout" in combined
+            or "timed out" in combined
+            or "time out" in combined
+            or name in {"TimeoutError", "asyncio.TimeoutError"}
+            or "TimeoutError" in name
+        ):
+            return (
+                "timeout",
+                "渲染超时。建议: 1) 把 t2i_r1_timeout / t2i_r2_timeout 调到 120000~180000 "
+                "2) 第一轮改 jpeg + high（别用 png+ultra）"
+                "3) 换 simple 模板减小 HTML 体积"
+                "4) 字体源改 Mainland 避免 Google Fonts 卡住",
+            )
+
+        # Playwright / 浏览器未装
+        if any(
+            k in combined
+            for k in (
+                "playwright",
+                "chromium",
+                "browser",
+                "executable doesn't exist",
+                "executable_path",
+                "browserType.launch",
+                "targetclosederror",
+                "browsertype",
+            )
+        ):
+            return (
+                "browser_missing",
+                "Playwright/Chromium 启动失败。在 AstrBot 运行环境执行: "
+                "`playwright install chromium`；Linux 再加 `playwright install-deps chromium`，然后重启 AstrBot",
+            )
+
+        # 网络 / 远程 T2I 端点
+        if any(
+            k in combined
+            for k in (
+                "endpoint",
+                "connection",
+                "connect",
+                "refused",
+                "reset",
+                "unreachable",
+                "name or service not known",
+                "nodename nor servname",
+                "ssl",
+                "certificate",
+                "502",
+                "503",
+                "504",
+                "bad gateway",
+                "service unavailable",
+                "httpx",
+                "aiohttp",
+                "clientconnector",
+            )
+        ):
+            return (
+                "endpoint_network",
+                "远程 T2I 端点网络失败。检查 AstrBot 系统配置里的 T2I URL；"
+                "本地部署可改用本地 Playwright，或换 HF Space / 国内 CF 代理端点",
+            )
+
+        # 内存 / 资源
+        if any(
+            k in combined
+            for k in ("memory", "oom", "cannot allocate", "killed", "resource")
+        ):
+            return (
+                "resource",
+                "渲染资源不足（内存/进程被杀）。建议: jpeg + normal scale、减小 HTML、"
+                "把 max_concurrent_t2i 保持为 1",
+            )
+
+        # 字体相关
+        if any(k in combined for k in ("font", "woff", "googleapis", "gstatic")):
+            return (
+                "font",
+                "字体资源异常。把 t2i_font_source 改为 Mainland（fonts.loli.net），"
+                "或检查本机能否访问 Google Fonts 镜像",
+            )
+
+        return (
+            "unknown",
+            f"未归类异常 ({name})。请把完整堆栈贴出以便继续排查；"
+            f"同时确认: playwright install chromium / T2I 端点 / timeout / 模板体积",
+        )
 
     def _extract_html_error_summary(self, data: bytes) -> str | None:
         """从返回的字节流中尝试提取 HTML 错误信息（如 <title>）"""
