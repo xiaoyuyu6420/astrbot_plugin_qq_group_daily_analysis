@@ -30,6 +30,39 @@ from ...infrastructure.persistence.incremental_store import IncrementalStore
 from ...utils.logger import logger
 
 
+# 水位线「未来时间戳」容忍度：超过 fetch 起点这么多秒才视为时钟异常
+WATERMARK_FUTURE_MARGIN = 3600  # 1 小时
+
+
+def compute_safe_watermark(
+    last_message_timestamp: int,
+    fetch_start_ts: int,
+    future_margin: int = WATERMARK_FUTURE_MARGIN,
+) -> int:
+    """计算增量分析的安全水位线（下一轮 fetch 的 since_ts）。
+
+    契约：
+    1. 正常场景：返回 last_message_timestamp —— 本批次实际窗口终点，
+       LLM 跑多久都不会影响水位线（不再用 wall_clock + 60s）。
+    2. 时钟异常：last_message_timestamp 远超 fetch_start_ts（> margin），
+       回退到 fetch_start_ts，防止毒化水位线导致后续永远拉不到消息。
+
+    Args:
+        last_message_timestamp: 本批次最后一条消息的 epoch 时间戳
+        fetch_start_ts: 本轮 fetch_messages 调用前记录的时刻
+        future_margin: 允许 last_message_timestamp 超过 fetch_start_ts 的秒数
+
+    Returns:
+        安全水位线时间戳
+    """
+    if last_message_timestamp <= 0:
+        # 本批次没有有效消息时间戳 —— 不推进水位线，由调用方决定是否写
+        return 0
+    if last_message_timestamp > fetch_start_ts + future_margin:
+        return fetch_start_ts
+    return last_message_timestamp
+
+
 class DuplicateGroupTaskError(Exception):
     """当同一个群组在同一时间尝试启动相同类型的重复分析任务时抛出。"""
 
@@ -337,6 +370,14 @@ class AnalysisApplicationService:
             # 在增量模式下，拉取上限由安全限制 (Safe Count) 统一控制，确保能追平进度且不溢出
             max_count = self.config_manager.get_incremental_safe_limit()
 
+            # 记录本轮 fetch 起点时刻 —— 用于 LLM 完成后计算水位线上限。
+            # 关键：避免用 "LLM 完成时的 wall clock" 作为水位线，因为 LLM 慢时
+            # 期间到达的消息时间戳会 < wall clock，导致 min(last_msg_ts, wall_clock)
+            # 回退水位线，下一轮重复拉取已分析消息（甚至丢消息）。
+            # 用 fetch 起点作为基准，意味着"本轮只对 fetch 时已存在的消息负责"，
+            # fetch 之后到达的消息留给下一轮。
+            fetch_start_ts = int(time_mod.time())
+
             # 3. 拉取消息（优先从上次进度点开始回溯，确保不遗漏高活跃期间的 Gap）
             raw_messages = await adapter.fetch_messages(
                 group_id=group_id,
@@ -500,15 +541,25 @@ class AnalysisApplicationService:
             # 9. 保存批次并更新最后分析时间戳
             await self.incremental_store.save_batch(batch)
 
-            # 安全更新水位线：取消息最大时间戳，但不能超过当前时间+1分钟，防止未来时间戳毒化导致后续分析死锁
-            import time
-
-            safe_now = int(time.time()) + 60
-            safe_ts = min(last_message_timestamp, safe_now)
-
-            await self.incremental_store.update_last_analyzed_timestamp(
-                group_id, safe_ts
+            # 安全更新水位线（见 compute_safe_watermark 文档）
+            safe_ts = compute_safe_watermark(
+                last_message_timestamp, fetch_start_ts
             )
+            if (
+                last_message_timestamp > 0
+                and safe_ts == fetch_start_ts
+                and last_message_timestamp > fetch_start_ts + WATERMARK_FUTURE_MARGIN
+            ):
+                logger.warning(
+                    f"群 {group_id} 本批次最后消息时间戳 {last_message_timestamp} "
+                    f"远超本轮 fetch 起点 {fetch_start_ts}（>{WATERMARK_FUTURE_MARGIN}s），"
+                    f"疑似时钟异常，水位线回退到 fetch 起点"
+                )
+
+            if safe_ts > 0:
+                await self.incremental_store.update_last_analyzed_timestamp(
+                    group_id, safe_ts
+                )
 
             logger.info(
                 f"群 {group_id} 增量分析完成: "
