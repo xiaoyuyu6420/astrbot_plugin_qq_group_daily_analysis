@@ -448,15 +448,6 @@ class ConfigManager:
         self._ensure_group("auto_analysis")["auto_analysis_time"] = time_val
         self.config.save_config()
 
-    def is_auto_analysis_enabled(self) -> bool:
-        """
-        判断自动分析功能是否通过名单“按需开启”。
-        逻辑：如果是白名单模式且名单不为空，或者为黑名单模式，则视为开启。
-        """
-        mode = self.get_scheduled_group_list_mode()
-        lst = self.get_scheduled_group_list()
-        return (mode == "whitelist" and len(lst) > 0) or (mode == "blacklist")
-
     def get_scheduled_group_list_mode(self) -> str:
         """获取定时分析名单模式 (whitelist/blacklist)"""
         return self._get_group("auto_analysis").get(
@@ -469,8 +460,54 @@ class ConfigManager:
         self.config.save_config()
 
     def get_scheduled_group_list(self) -> list[str]:
-        """获取定时分析目标群列表"""
+        """获取定时分析目标群列表（仅 delivery_mode=per_group）"""
         return self._get_group("auto_analysis").get("scheduled_group_list", [])
+
+    def get_delivery_mode(self) -> str:
+        """定时推送形态：per_group（单群完整日报）或 by_category（用户分类聚合）。
+
+        缺省/非法值回退 per_group，兼容旧配置。
+        """
+        mode = str(
+            self._get_group("auto_analysis").get("delivery_mode", "per_group")
+        ).strip().lower()
+        if mode not in ("per_group", "by_category"):
+            return "per_group"
+        return mode
+
+    def get_category_push_mode(self) -> str:
+        """分类聚合推送形态：split（每分类一条）或 merged（一条分块）。"""
+        mode = str(
+            self._get_group("auto_analysis").get("category_push_mode", "split")
+        ).strip().lower()
+        if mode not in ("split", "merged"):
+            return "split"
+        return mode
+
+    def get_push_categories(self) -> list:
+        """解析用户分类列表，归一化为 list[PushCategory]。
+
+        支持：
+        - list[dict]：[{"name":"科技","groups":["1","2"]}, ...]
+        - JSON 字符串（面板 text 编辑器）
+        无效项跳过；空 name / 无 groups 的分类丢弃。
+        """
+        from ...domain.entities.push_category import normalize_push_categories
+
+        raw = self._get_group("auto_analysis").get("categories", [])
+        return normalize_push_categories(raw)
+
+    def is_auto_analysis_enabled(self) -> bool:
+        """判断定时分析是否应按配置开启。
+
+        - by_category：categories 非空即视为开启
+        - per_group：白名单非空或黑名单模式
+        """
+        if self.get_delivery_mode() == "by_category":
+            return len(self.get_push_categories()) > 0
+        mode = self.get_scheduled_group_list_mode()
+        lst = self.get_scheduled_group_list()
+        return (mode == "whitelist" and len(lst) > 0) or (mode == "blacklist")
 
     # ==================== 管理员私聊通知配置 ====================
 

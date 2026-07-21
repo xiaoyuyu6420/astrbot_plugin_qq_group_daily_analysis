@@ -21,219 +21,67 @@
             }
         }
     },
-    "message_monitor": {
-        "description": "① 实时消息监控（盯人预警 · 分层聚合 · 分类频道）",
+    "auto_analysis": {
+        "description": "① 定时日报（核心：到点看一眼）",
         "type": "object",
-        "hint": "【实时链路】监听群消息，有价值就立刻/几分钟内私聊你。与「定时分析」(auto_analysis) 完全独立。\n\n配置顺序：1) 总开关 2) monitor_mode 触发方式 3) window_scope 分析范围 4) aggregation_mode 聚合方式（仅 cross_group） 5) 频道订阅 channels_enabled 6) 监控群/目标QQ/推送人。\n\n群多时（10+）推荐 window_scope=cross_group + aggregation_mode=layered + channel_push_mode=split，按密钥/资源/商机/情报/干货分频道推，可订阅只收关键频道。",
+        "hint": "【核心链路】每天到点汇总有价值信息并推送（默认私聊管理员）。\n群少 → delivery_mode=per_group 每群完整日报；\n群多 → delivery_mode=by_category 按「科技/AI/自定义」等分类下挂群列表做聚合摘要。\n与底部「主动推送/实时监控」完全独立：一边是固定时间看一眼，一边是分钟级/秒级预警。",
         "items": {
-            "enable_monitor": {
-                "type": "bool",
-                "default": false,
-                "description": "【总开关】开启实时消息监控",
-                "hint": "关=整条实时链路停用。开了再往下选模式与范围。"
-            },
-            "monitor_mode": {
-                "type": "string",
-                "description": "【触发方式】keyword 即时 / window 整窗",
-                "options": [
-                    "keyword",
-                    "window"
+            "auto_analysis_time": {
+                "type": "list",
+                "description": "【定时】自动分析时间点",
+                "default": [
+                    "23:00"
                 ],
-                "default": "window",
-                "hint": "keyword=关键词即时：命中关键词/正则就推（秒级，适合盯全群 API key/资源）。\nwindow=整窗汇总：攒 N 分钟后用 LLM 总结（分钟级，适合盯特定人、需要上下文）。\n\n两者不要混着理解：keyword 是「即时告警」，window 是「短时简报」。"
+                "hint": "每天几点自动出报告，格式是 HH:MM。可填多个时间，例如 [\"09:00\", \"21:30\"]。",
+                "items": {
+                    "type": "string"
+                }
             },
-            "window_scope": {
+            "delivery_mode": {
                 "type": "string",
-                "description": "【分析范围·仅 window】单群独立 / 多群汇总",
+                "description": "【核心】推送形态：单群完整日报 / 分类聚合摘要",
                 "options": [
                     "per_group",
-                    "cross_group"
+                    "by_category"
                 ],
                 "default": "per_group",
-                "hint": "只在 monitor_mode=window 时生效。\n\nper_group（单群独立分析，默认）= 每个监控群各自出一份简报，互不合并。\ncross_group（多群汇总分析）= 把所有监控群窗口内消息合并，LLM 按话题聚类，输出一份跨群简报（去重、标来源群）。\n\nkeyword 模式忽略此项。旧配置 enable_cross_group=true 仍兼容为 cross_group。"
+                "hint": "per_group（默认，群少）= 对 scheduled_group_list 里每个群出完整日报。\nby_category（群多）= 按下方 categories 分类聚合：每个分类下挂若干群，到点输出分类摘要（文本）。\nby_category 不走增量分析；增量仍只服务 per_group。"
             },
-            "aggregation_mode": {
+            "category_push_mode": {
                 "type": "string",
-                "description": "【跨群聚合·核心】聚合方式",
-                "options": [
-                    "layered",
-                    "legacy"
-                ],
-                "default": "layered",
-                "hint": "layered（推荐，默认）= 分层聚合：每群本地规则提炼 candidates → 跨群指纹去重 → 按频道分类打包。50+ 群可用，不全量塞一次 LLM。\nlegacy = 兼容旧行为：所有群原始聊天拼一份文本送 LLM 聚类（4000 字截断，群多会丢）。"
-            },
-            "channel_push_mode": {
-                "type": "string",
-                "description": "【跨群聚合·推送】频道推送形态",
+                "description": "【分类聚合】推送形态",
                 "options": [
                     "split",
                     "merged"
                 ],
                 "default": "split",
-                "hint": "split（默认）= 每个分类频道各推一条（密钥/资源/商机/情报/干货）。\nmerged = 合并成一条总简报（兼容旧格式）。"
+                "hint": "仅 delivery_mode=by_category 生效。\nsplit（默认）= 每个分类各推一条（科技日报 / AI 日报）。\nmerged = 合并成一条总简报，按分类分块。"
             },
-            "channels_enabled": {
-                "type": "list",
-                "description": "【跨群聚合·订阅】启用的频道",
-                "default": [
-                    "apikey",
-                    "resource",
-                    "deal",
-                    "intel",
-                    "method"
+            "categories": {
+                "type": "text",
+                "editor_mode": true,
+                "editor_language": "json",
+                "description": "【分类聚合】用户分类（名称 + 群列表）",
+                "default": "[]",
+                "hint": "JSON 数组。每个元素：{\"name\":\"分类名\",\"groups\":[\"群号\",...]}。\n示例：\n[\n  {\"name\": \"科技\", \"groups\": [\"123456\", \"234567\"]},\n  {\"name\": \"AI\", \"groups\": [\"345678\"]}\n]\n同一群可出现在多个分类。空数组 + by_category = 跳过本次定时并打错误日志。\n分类里的群仍需通过 basic 群权限白名单。"
+            },
+            "scheduled_group_list_mode": {
+                "type": "string",
+                "description": "【定时】名单模式",
+                "options": [
+                    "whitelist",
+                    "blacklist"
                 ],
-                "hint": "只推送这些频道。可填子集，如 [\"apikey\",\"resource\"] 只收密钥与资源。完整：apikey/resource/deal/intel/method/other。other 默认不收。",
-                "items": {
-                    "type": "string"
-                }
+                "default": "whitelist",
+                "hint": "仅 delivery_mode=per_group 使用。whitelist=只跑下面列表里的群；blacklist=除了下面列表，其他都跑。注意：这里只对“已通过基础群权限”的群生效。by_category 请用 categories，不看此名单。"
             },
-            "max_items_per_channel": {
-                "type": "int",
-                "default": 5,
-                "description": "【跨群聚合·规模】每频道最多保留条数",
-                "hint": "防止 50+ 群刷爆。超出按优先级截断（critical 优先保留）。默认 5。"
-            },
-            "max_candidates_per_group": {
-                "type": "int",
-                "default": 5,
-                "description": "【跨群聚合·规模】每群 L1 最多候选条数",
-                "hint": "每群提取的 candidates 上限，控制进入 L2 的扇出。critical 必留。默认 5。"
-            },
-            "critical_instant_push": {
-                "type": "bool",
-                "default": true,
-                "description": "【Phase2】critical 秒推（window 也立即推）",
-                "hint": "window 模式下，命中 API Key 等也立即私聊推一条，不等 flush_interval。仍走去重防同密钥多群重复推。默认开。"
-            },
-            "l1_use_llm": {
-                "type": "bool",
-                "default": false,
-                "description": "【Phase2】L1 用 LLM 提炼",
-                "hint": "开启后 L1 每群调用一次小 LLM 合并/打 reason。50+ 群默认关（省钱）；追求质量可开。关时纯规则提炼。"
-            },
-            "l1_parallel_groups": {
-                "type": "int",
-                "default": 8,
-                "description": "【Phase2】L1 并发群数上限",
-                "hint": "l1_use_llm=true 时 LLM 提炼的并发群数。受 llm_semaphore 全局限制。默认 8。"
-            },
-            "l2_shard_threshold": {
-                "type": "int",
-                "default": 60,
-                "description": "【Phase2】L2 分片阈值",
-                "hint": "candidates 数超过此值时，L2 按频道分批处理，避免一次 prompt 过大。默认 60。"
-            },
-            "push_max_chars": {
-                "type": "int",
-                "default": 1800,
-                "description": "【Phase2】单条推送字符上限",
-                "hint": "超出此长度的简报自动分页成多条。防 QQ 等平台长文本截断。默认 1800。"
-            },
-            "monitored_groups": {
+            "scheduled_group_list": {
                 "type": "list",
-                "description": "【范围】监控群列表（必填）",
+                "description": "【定时】要出日报的群列表",
                 "default": [],
-                "hint": "要监控的群号（纯数字）。空=不盯任何群。\n单群：填 1 个群；多群：填多个。window_scope=cross_group 时，这些群会在一次 flush 里被合并分析。",
+                "hint": "仅 delivery_mode=per_group 使用。填 UMO 或群号。空白名单=不定时跑。by_category 请配置 categories，不要依赖此列表。",
                 "items": {
                     "type": "string"
-                }
-            },
-            "monitored_qqs": {
-                "type": "list",
-                "description": "【范围】要盯的目标 QQ",
-                "default": [],
-                "hint": "window 模式建议必填：LLM 重点提取这些人的发言价值。\nkeyword 模式可选：填了=只检测这些人；空=检测群里所有人。",
-                "items": {
-                    "type": "string"
-                }
-            },
-            "alert_admin_qqs": {
-                "type": "list",
-                "description": "【推送】预警接收人 QQ",
-                "default": [],
-                "hint": "实时预警私聊发给谁。空=复用管理员 QQ（AstrBot 超管 + admin_notify.extra_admin_qq）。与定时日报的接收人可分开配。",
-                "items": {
-                    "type": "string"
-                }
-            },
-            "use_llm_confirm": {
-                "type": "bool",
-                "default": true,
-                "description": "【质量】用 LLM 过滤/提取",
-                "hint": "keyword：命中后 LLM 二次确认是否真有用（减少误推）。\nwindow：每个窗口用 LLM 提取有价值信息。\n关=省 token、噪音多；LLM 挂了会自动降级。"
-            },
-            "flush_interval": {
-                "type": "int",
-                "default": 10,
-                "description": "【window】汇总间隔（分钟）",
-                "hint": "仅 window 模式：每隔多少分钟 flush 一次并推简报。建议 5~30，默认 10。keyword 模式不看这个。"
-            },
-            "max_context_messages": {
-                "type": "int",
-                "default": 50,
-                "description": "【window】对话窗口最大条数",
-                "hint": "仅 window 模式：送给 LLM 的上下文最多多少条。超出时以目标 QQ 为中心截断。默认 50。"
-            },
-            "extra_keywords": {
-                "type": "list",
-                "description": "【keyword】自定义关键词",
-                "default": [],
-                "hint": "主要给 keyword 模式用：命中即触发。window 模式仅作 LLM 提示。例：[\"破解\", \"激活码\", \"资源\"]。",
-                "items": {
-                    "type": "string"
-                }
-            },
-            "cooldown_seconds": {
-                "type": "int",
-                "default": 60,
-                "description": "【keyword 降噪】推送冷却（秒）",
-                "hint": "仅 keyword：同一发送者@同一群最小推送间隔。0=不冷却。API Key 等 critical 命中豁免。默认 60。"
-            },
-            "dedup_minutes": {
-                "type": "int",
-                "default": 30,
-                "description": "【降噪】内容去重窗口（分钟）",
-                "hint": "内容相似消息在 N 分钟内只推一次，防跨群重复轰炸。0=不去重。默认 30。keyword/window 都可用。"
-            },
-            "keyword_batch_seconds": {
-                "type": "int",
-                "default": 60,
-                "description": "【keyword 降噪】批量合并间隔（秒）",
-                "hint": "仅 keyword：normal 优先级（资源/自定义词）攒 N 秒合并成一条。0=立即推。critical 不受限。默认 60。"
-            }
-        }
-    },
-    "prompts": {
-        "description": "提示词模板（话题 + 信息差，可自定义）",
-        "type": "object",
-        "hint": "定制版只保留有价值信息相关提示词：话题分析、信息差/商机/干货提取。可按群聊内容自行优化。",
-        "items": {
-            "topic_analysis_prompts": {
-                "description": "有价值话题分析提示词",
-                "type": "object",
-                "hint": "提取有讨论价值话题的提示词。可自定义修改，保留变量 ${max_topics} 和 ${messages_text}，JSON 示例请用双花括号 {{ ... }}。",
-                "items": {
-                    "topic_prompt": {
-                        "description": "默认话题分析提示词",
-                        "type": "text",
-                        "editor_mode": true,
-                        "editor_language": "markdown",
-                        "default": "请分析以下群聊记录，提取最多 **${max_topics}** 个**有讨论价值的话题**。聚焦于有信息量、有深度、有结论的讨论，忽略纯闲聊。\n\n## 话题筛选优先级（从高到低）：\n\n1. **有价值的信息讨论**：涉及商机、资源、技术、行业动态等有信息量的话题\n2. **有深度的问题探讨**：有人提出问题并引发了有质量的讨论、解答\n3. **有结论的讨论**：达成了某种共识、结论或行动方案\n4. **多方参与的热烈讨论**：多人参与、信息密度高的话题\n\n## 对于每个话题，请提供：\n\n1. **话题名称**（突出主题内容，简明扼要，控制在 10 字以内）\n2. **主要参与者用户ID**（最多 5 人，按参与度排序）\n3. **话题详细描述**（包含关键信息、讨论要点和结论）\n\n## 注意事项：\n\n- **优先选择有信息量、有价值的讨论**，忽略纯灌水、表情包、闲聊寒暄\n- 对于有价值的信息点，详细讲讲，让读者能 get 到讨论的深度和价值\n- 明确指出\"谁说了什么\"，体现信息来源\n- 如果话题有明确结论或共识，务必在描述中体现\n- **用户引用**：描述中提到用户时用 `[用户ID]` 格式（例如 `[123456]`），不要只写昵称\n- 如果消息太少或没有有价值的话题，返回空数组 []\n\n群聊记录格式: [HH:MM] [用户ID]: 消息内容\n\n群聊记录：\n${messages_text}\n\n---\n\n## 重要：必须返回标准 JSON 格式\n\n1. 只使用英文双引号 `\"`，不要用中文引号\n2. 字符串中的引号必须转义为 `\\\"`\n3. 不要在 JSON 外添加任何文字说明\n\n### 返回格式示例：\n\n```json\n[\n  {{\n    \"topic\": \"话题名称\",\n    \"contributors\": [\"123456789\", \"987654321\"],\n    \"detail\": \"话题详细描述，包含讨论内容、关键信息和结论。提及用户时用 [用户ID] 格式。\"\n  }}\n]\n```\n\n**注意**：返回纯 JSON，不要包含 markdown 代码块标记。"
-                    }
-                }
-            },
-            "golden_quote_analysis_prompts": {
-                "description": "信息差/商机/干货提取提示词",
-                "type": "object",
-                "hint": "提取有价值信息的提示词。可自定义修改，保留变量 ${max_golden_quotes} 和 ${messages_text}，JSON 示例请用双花括号 {{ ... }}。",
-                "items": {
-                    "golden_quote_v2_prompt": {
-                        "description": "信息差/商机提取提示词（定制版）",
-                        "type": "text",
-                        "editor_mode": true,
-                        "editor_language": "markdown",
-                        "default": "请从以下群聊记录中提取 **${max_golden_quotes}** 条最有价值的信息（信息差/商机/干货）。\n\n## 价值标准（按优先级从高到低）：\n\n1. **搞钱商机**：项目、副业、变现思路、套利机会、合作机会、赚钱路子\n2. **资源干货**：好用的工具、教程、资料、渠道、产品推荐、省钱技巧\n3. **行业情报**：行业内幕、一手消息、趋势判断、稀缺信息、政策变化\n4. **认知差**：能让人\"原来还可以这样\"的思维洞见、经验总结、方法论\n\n## 对于每条信息，请提供：\n\n1. **原文内容**（完整保留发言细节，不要改写）\n2. **发言人用户ID**（必须严格使用消息记录中提供的 [用户ID]）\n3. **价值说明**（具体说明这条信息的价值点：是商机/资源/情报/认知？为什么有用）\n\n## 严格约束：\n\n- **必须忽略**：闲聊灌水、表情包、单纯玩梗、网络热词堆砌、无意义的情绪宣泄\n- 优先筛选**价值密度最高、最可行动**的内容\n- 如果整段聊天确实没有有价值的信息，返回空数组 []（宁缺毋滥，不要硬凑）\n- **用户引用**：在价值说明（reason）中提到具体用户时，使用 `[用户ID]` 格式（例如 `[123456]`），不要只写昵称，系统会自动渲染头像\n- **身份对齐**：返回的 `sender` 字段必须是 `[用户ID]` 格式（例如 `[123456]`）\n\n## 群聊记录格式: [HH:MM] [用户ID]: 消息内容\n\n## 群聊记录：\n\n${messages_text}\n\n---\n\n### 返回格式示例：\n\n```json\n[\n  {{\n    \"content\": \"原文内容\",\n    \"sender\": \"[123456789]\",\n    \"reason\": \"这是一条搞钱商机：[123456789] 分享了xxx变现思路，价值在于...\"\n  }}\n]\n```\n\n**注意**：返回的内容必须是纯 JSON，不要包含 markdown 代码块标记或其他格式。"
-                    }
                 }
             }
         }
@@ -288,39 +136,37 @@
             }
         }
     },
-    "auto_analysis": {
-        "description": "② 定时日报分析（与上方「实时监控」无关）",
+    "prompts": {
+        "description": "提示词模板（话题 + 信息差，可自定义）",
         "type": "object",
-        "hint": "【定时链路】到点对名单里的群跑「群聊日报」并推送（默认私聊管理员）。与 message_monitor 实时盯盘互不影响：一边是每天固定时间总结，一边是分钟级/秒级预警。",
+        "hint": "定制版只保留有价值信息相关提示词：话题分析、信息差/商机/干货提取。可按群聊内容自行优化。",
         "items": {
-            "auto_analysis_time": {
-                "type": "list",
-                "description": "【定时】自动分析时间点",
-                "default": [
-                    "23:00"
-                ],
-                "hint": "每天几点自动出报告，格式是 HH:MM。可填多个时间，例如 [\"09:00\", \"21:30\"]。",
+            "topic_analysis_prompts": {
+                "description": "有价值话题分析提示词",
+                "type": "object",
+                "hint": "提取有讨论价值话题的提示词。可自定义修改，保留变量 ${max_topics} 和 ${messages_text}，JSON 示例请用双花括号 {{ ... }}。",
                 "items": {
-                    "type": "string"
+                    "topic_prompt": {
+                        "description": "默认话题分析提示词",
+                        "type": "text",
+                        "editor_mode": true,
+                        "editor_language": "markdown",
+                        "default": "请分析以下群聊记录，提取最多 **${max_topics}** 个**有讨论价值的话题**。聚焦于有信息量、有深度、有结论的讨论，忽略纯闲聊。\n\n## 话题筛选优先级（从高到低）：\n\n1. **有价值的信息讨论**：涉及商机、资源、技术、行业动态等有信息量的话题\n2. **有深度的问题探讨**：有人提出问题并引发了有质量的讨论、解答\n3. **有结论的讨论**：达成了某种共识、结论或行动方案\n4. **多方参与的热烈讨论**：多人参与、信息密度高的话题\n\n## 对于每个话题，请提供：\n\n1. **话题名称**（突出主题内容，简明扼要，控制在 10 字以内）\n2. **主要参与者用户ID**（最多 5 人，按参与度排序）\n3. **话题详细描述**（包含关键信息、讨论要点和结论）\n\n## 注意事项：\n\n- **优先选择有信息量、有价值的讨论**，忽略纯灌水、表情包、闲聊寒暄\n- 对于有价值的信息点，详细讲讲，让读者能 get 到讨论的深度和价值\n- 明确指出\"谁说了什么\"，体现信息来源\n- 如果话题有明确结论或共识，务必在描述中体现\n- **用户引用**：描述中提到用户时用 `[用户ID]` 格式（例如 `[123456]`），不要只写昵称\n- 如果消息太少或没有有价值的话题，返回空数组 []\n\n群聊记录格式: [HH:MM] [用户ID]: 消息内容\n\n群聊记录：\n${messages_text}\n\n---\n\n## 重要：必须返回标准 JSON 格式\n\n1. 只使用英文双引号 `\"`，不要用中文引号\n2. 字符串中的引号必须转义为 `\\\"`\n3. 不要在 JSON 外添加任何文字说明\n\n### 返回格式示例：\n\n```json\n[\n  {{\n    \"topic\": \"话题名称\",\n    \"contributors\": [\"123456789\", \"987654321\"],\n    \"detail\": \"话题详细描述，包含讨论内容、关键信息和结论。提及用户时用 [用户ID] 格式。\"\n  }}\n]\n```\n\n**注意**：返回纯 JSON，不要包含 markdown 代码块标记。"
+                    }
                 }
             },
-            "scheduled_group_list_mode": {
-                "type": "string",
-                "description": "【定时】名单模式",
-                "options": [
-                    "whitelist",
-                    "blacklist"
-                ],
-                "default": "whitelist",
-                "hint": "定时任务要作用到哪些群。whitelist=只跑下面列表里的群；blacklist=除了下面列表，其他都跑。注意：这里只对“已通过基础群权限”的群生效。"
-            },
-            "scheduled_group_list": {
-                "type": "list",
-                "description": "【定时】要出日报的群列表",
-                "default": [],
-                "hint": "填 UMO 或群号。空白名单=不定时跑。注意：这是日报群列表，不是实时监控的 monitored_groups。",
+            "golden_quote_analysis_prompts": {
+                "description": "信息差/商机/干货提取提示词",
+                "type": "object",
+                "hint": "提取有价值信息的提示词。可自定义修改，保留变量 ${max_golden_quotes} 和 ${messages_text}，JSON 示例请用双花括号 {{ ... }}。",
                 "items": {
-                    "type": "string"
+                    "golden_quote_v2_prompt": {
+                        "description": "信息差/商机提取提示词（定制版）",
+                        "type": "text",
+                        "editor_mode": true,
+                        "editor_language": "markdown",
+                        "default": "请从以下群聊记录中提取 **${max_golden_quotes}** 条最有价值的信息（信息差/商机/干货）。\n\n## 价值标准（按优先级从高到低）：\n\n1. **搞钱商机**：项目、副业、变现思路、套利机会、合作机会、赚钱路子\n2. **资源干货**：好用的工具、教程、资料、渠道、产品推荐、省钱技巧\n3. **行业情报**：行业内幕、一手消息、趋势判断、稀缺信息、政策变化\n4. **认知差**：能让人\"原来还可以这样\"的思维洞见、经验总结、方法论\n\n## 对于每条信息，请提供：\n\n1. **原文内容**（完整保留发言细节，不要改写）\n2. **发言人用户ID**（必须严格使用消息记录中提供的 [用户ID]）\n3. **价值说明**（具体说明这条信息的价值点：是商机/资源/情报/认知？为什么有用）\n\n## 严格约束：\n\n- **必须忽略**：闲聊灌水、表情包、单纯玩梗、网络热词堆砌、无意义的情绪宣泄\n- 优先筛选**价值密度最高、最可行动**的内容\n- 如果整段聊天确实没有有价值的信息，返回空数组 []（宁缺毋滥，不要硬凑）\n- **用户引用**：在价值说明（reason）中提到具体用户时，使用 `[用户ID]` 格式（例如 `[123456]`），不要只写昵称，系统会自动渲染头像\n- **身份对齐**：返回的 `sender` 字段必须是 `[用户ID]` 格式（例如 `[123456]`）\n\n## 群聊记录格式: [HH:MM] [用户ID]: 消息内容\n\n## 群聊记录：\n\n${messages_text}\n\n---\n\n### 返回格式示例：\n\n```json\n[\n  {{\n    \"content\": \"原文内容\",\n    \"sender\": \"[123456789]\",\n    \"reason\": \"这是一条搞钱商机：[123456789] 分享了xxx变现思路，价值在于...\"\n  }}\n]\n```\n\n**注意**：返回的内容必须是纯 JSON，不要包含 markdown 代码块标记或其他格式。"
+                    }
                 }
             }
         }
@@ -741,7 +587,7 @@
                 "type": "string",
                 "description": "报告储存目录",
                 "default": "",
-                "hint": "HTML报告文件的保存目录，用于存储生成的 HTML 文件和原始 JSON 数据。留空则自动使用插件数据目录（astrbot_path/data/plugin_data/astrbot_plugin_qq_group_daily_analysis/）下的 self_hosted_html_reports 目录。"
+                "hint": "HTML报告文件的保存目录，用于存储生成的 HTML 文件和原始 JSON 数据。留空则自动使用插件数据目录（astrbot_path/data/plugin_data/astrbot_plugin_priestess_watching/）下的 self_hosted_html_reports 目录。"
             },
             "html_only_url": {
                 "type": "bool",
@@ -791,6 +637,188 @@
                 "description": "群相册上传严格模式",
                 "default": true,
                 "hint": "当启用该开关且设置了目标群相册名称时：如果插件在目标群组中找不到同名的相册，将放弃上传。关闭该开关时，找不到目标相册将回退到群组默认的第一个相册。"
+            }
+        }
+    },
+    "message_monitor": {
+        "description": "主动推送 · 实时监控（次要，与定时日报无关）",
+        "type": "object",
+        "hint": "【次要链路】监听群消息，有价值就立刻/几分钟内私聊你。与上方「定时日报」完全独立。\n配置顺序：1) 总开关 2) monitor_mode 触发方式 3) window_scope 分析范围 4) aggregation_mode 聚合方式（仅 cross_group） 5) 内容频道订阅 channels_enabled 6) 监控群/目标QQ/推送人。\n注意：这里的「内容频道」是按消息类型（密钥/资源/商机…）分类，不是定时日报里的「科技/AI 用户分类」。",
+        "items": {
+            "enable_monitor": {
+                "type": "bool",
+                "default": false,
+                "description": "【总开关】开启实时消息监控",
+                "hint": "关=整条实时链路停用。开了再往下选模式与范围。"
+            },
+            "monitor_mode": {
+                "type": "string",
+                "description": "【触发方式】keyword 即时 / window 整窗",
+                "options": [
+                    "keyword",
+                    "window"
+                ],
+                "default": "window",
+                "hint": "keyword=关键词即时：命中关键词/正则就推（秒级，适合盯全群 API key/资源）。\nwindow=整窗汇总：攒 N 分钟后用 LLM 总结（分钟级，适合盯特定人、需要上下文）。\n\n两者不要混着理解：keyword 是「即时告警」，window 是「短时简报」。"
+            },
+            "window_scope": {
+                "type": "string",
+                "description": "【分析范围·仅 window】单群独立 / 多群汇总",
+                "options": [
+                    "per_group",
+                    "cross_group"
+                ],
+                "default": "per_group",
+                "hint": "只在 monitor_mode=window 时生效。\n\nper_group（单群独立分析，默认）= 每个监控群各自出一份简报，互不合并。\ncross_group（多群汇总分析）= 把所有监控群窗口内消息合并，LLM 按话题聚类，输出一份跨群简报（去重、标来源群）。\n\nkeyword 模式忽略此项。旧配置 enable_cross_group=true 仍兼容为 cross_group。"
+            },
+            "aggregation_mode": {
+                "type": "string",
+                "description": "【跨群聚合·核心】聚合方式",
+                "options": [
+                    "layered",
+                    "legacy"
+                ],
+                "default": "layered",
+                "hint": "layered（推荐，默认）= 分层聚合：每群本地规则提炼 candidates → 跨群指纹去重 → 按频道分类打包。50+ 群可用，不全量塞一次 LLM。\nlegacy = 兼容旧行为：所有群原始聊天拼一份文本送 LLM 聚类（4000 字截断，群多会丢）。"
+            },
+            "channel_push_mode": {
+                "type": "string",
+                "description": "【跨群聚合·推送】内容频道推送形态",
+                "options": [
+                    "split",
+                    "merged"
+                ],
+                "default": "split",
+                "hint": "split（默认）= 每个内容频道各推一条（密钥/资源/商机/情报/干货）。\nmerged = 合并成一条总简报（兼容旧格式）。"
+            },
+            "channels_enabled": {
+                "type": "list",
+                "description": "【跨群聚合·订阅】启用的内容频道",
+                "default": [
+                    "apikey",
+                    "resource",
+                    "deal",
+                    "intel",
+                    "method"
+                ],
+                "hint": "只推送这些内容频道。可填子集，如 [\"apikey\",\"resource\"] 只收密钥与资源。完整：apikey/resource/deal/intel/method/other。other 默认不收。这是消息内容类型，不是定时日报的用户分类（科技/AI）。",
+                "items": {
+                    "type": "string"
+                }
+            },
+            "max_items_per_channel": {
+                "type": "int",
+                "default": 5,
+                "description": "【跨群聚合·规模】每内容频道最多保留条数",
+                "hint": "防止 50+ 群刷爆。超出按优先级截断（critical 优先保留）。默认 5。"
+            },
+            "max_candidates_per_group": {
+                "type": "int",
+                "default": 5,
+                "description": "【跨群聚合·规模】每群 L1 最多候选条数",
+                "hint": "每群提取的 candidates 上限，控制进入 L2 的扇出。critical 必留。默认 5。"
+            },
+            "critical_instant_push": {
+                "type": "bool",
+                "default": true,
+                "description": "【Phase2】critical 秒推（window 也立即推）",
+                "hint": "window 模式下，命中 API Key 等也立即私聊推一条，不等 flush_interval。仍走去重防同密钥多群重复推。默认开。"
+            },
+            "l1_use_llm": {
+                "type": "bool",
+                "default": false,
+                "description": "【Phase2】L1 用 LLM 提炼",
+                "hint": "开启后 L1 每群调用一次小 LLM 合并/打 reason。50+ 群默认关（省钱）；追求质量可开。关时纯规则提炼。"
+            },
+            "l1_parallel_groups": {
+                "type": "int",
+                "default": 8,
+                "description": "【Phase2】L1 并发群数上限",
+                "hint": "l1_use_llm=true 时 LLM 提炼的并发群数。受 llm_semaphore 全局限制。默认 8。"
+            },
+            "l2_shard_threshold": {
+                "type": "int",
+                "default": 60,
+                "description": "【Phase2】L2 分片阈值",
+                "hint": "candidates 数超过此值时，L2 按频道分批处理，避免一次 prompt 过大。默认 60。"
+            },
+            "push_max_chars": {
+                "type": "int",
+                "default": 1800,
+                "description": "【Phase2】单条推送字符上限",
+                "hint": "超出此长度的简报自动分页成多条。防 QQ 等平台长文本截断。默认 1800。"
+            },
+            "monitored_groups": {
+                "type": "list",
+                "description": "【范围】监控群列表（必填）",
+                "default": [],
+                "hint": "要监控的群号（纯数字）。空=不盯任何群。\n单群：填 1 个群；多群：填多个。window_scope=cross_group 时，这些群会在一次 flush 里被合并分析。",
+                "items": {
+                    "type": "string"
+                }
+            },
+            "monitored_qqs": {
+                "type": "list",
+                "description": "【范围】要盯的目标 QQ",
+                "default": [],
+                "hint": "window 模式建议必填：LLM 重点提取这些人的发言价值。\nkeyword 模式可选：填了=只检测这些人；空=检测群里所有人。",
+                "items": {
+                    "type": "string"
+                }
+            },
+            "alert_admin_qqs": {
+                "type": "list",
+                "description": "【推送】预警接收人 QQ",
+                "default": [],
+                "hint": "实时预警私聊发给谁。空=复用管理员 QQ（AstrBot 超管 + admin_notify.extra_admin_qq）。与定时日报的接收人可分开配。",
+                "items": {
+                    "type": "string"
+                }
+            },
+            "use_llm_confirm": {
+                "type": "bool",
+                "default": true,
+                "description": "【质量】用 LLM 过滤/提取",
+                "hint": "keyword：命中后 LLM 二次确认是否真有用（减少误推）。\nwindow：每个窗口用 LLM 提取有价值信息。\n关=省 token、噪音多；LLM 挂了会自动降级。"
+            },
+            "flush_interval": {
+                "type": "int",
+                "default": 10,
+                "description": "【window】汇总间隔（分钟）",
+                "hint": "仅 window 模式：每隔多少分钟 flush 一次并推简报。建议 5~30，默认 10。keyword 模式不看这个。"
+            },
+            "max_context_messages": {
+                "type": "int",
+                "default": 50,
+                "description": "【window】对话窗口最大条数",
+                "hint": "仅 window 模式：送给 LLM 的上下文最多多少条。超出时以目标 QQ 为中心截断。默认 50。"
+            },
+            "extra_keywords": {
+                "type": "list",
+                "description": "【keyword】自定义关键词",
+                "default": [],
+                "hint": "主要给 keyword 模式用：命中即触发。window 模式仅作 LLM 提示。例：[\"破解\", \"激活码\", \"资源\"]。",
+                "items": {
+                    "type": "string"
+                }
+            },
+            "cooldown_seconds": {
+                "type": "int",
+                "default": 60,
+                "description": "【keyword 降噪】推送冷却（秒）",
+                "hint": "仅 keyword：同一发送者@同一群最小推送间隔。0=不冷却。API Key 等 critical 命中豁免。默认 60。"
+            },
+            "dedup_minutes": {
+                "type": "int",
+                "default": 30,
+                "description": "【降噪】内容去重窗口（分钟）",
+                "hint": "内容相似消息在 N 分钟内只推一次，防跨群重复轰炸。0=不去重。默认 30。keyword/window 都可用。"
+            },
+            "keyword_batch_seconds": {
+                "type": "int",
+                "default": 60,
+                "description": "【keyword 降噪】批量合并间隔（秒）",
+                "hint": "仅 keyword：normal 优先级（资源/自定义词）攒 N 秒合并成一条。0=立即推。critical 不受限。默认 60。"
             }
         }
     }

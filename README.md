@@ -1,32 +1,14 @@
 <div align="center">
 
-# 世健世健你的好友
+# 我一直在看着你
 
-> 🔧 **xms 定制版** | Based on [astrbot_plugin_qq_group_daily_analysis](https://github.com/SXP-Simon/astrbot_plugin_qq_group_daily_analysis) by SXP-Simon
-
-[![Plugin Version](https://img.shields.io/badge/Latest_Version-v4.11.0--xms-blue.svg?style=for-the-badge&color=76bad9)](https://github.com/xiaoyuyu6420/astrbot_plugin_qq_group_daily_analysis)
+[![Plugin Version](https://img.shields.io/badge/Latest_Version-v1.0.0-blue.svg?style=for-the-badge&color=76bad9)](https://github.com/xiaoyuyu6420/astrbot_plugin_priestess_watching)
 [![AstrBot](https://img.shields.io/badge/AstrBot-Plugin-ff69b4?style=for-the-badge)](https://github.com/AstrBotDevs/AstrBot)
 [![License](https://img.shields.io/badge/License-MIT-green.svg?style=for-the-badge)](LICENSE)
 
-<table align="center" style="border: none;">
-  <tr>
-    <td style="border: none;" align="center">
-      <a href="https://qm.qq.com/q/oTzIrdDBIc"><img src="https://fastly.jsdelivr.net/gh/SXP-Simon/astrbot_plugin_qq_group_daily_analysis@main/assets/QQ.png" width="300" alt="QQ Group"></a>
-    </td>
-    <td style="border: none;" align="center">
-      <a href="https://t.me/AstrBotPluginGroupDailyAnalysis"><img src="https://fastly.jsdelivr.net/gh/SXP-Simon/astrbot_plugin_qq_group_daily_analysis@main/assets/TG.png" width="300" alt="Telegram Group"></a>
-    </td>
-  </tr>
-  <tr>
-    <td style="border: none;" align="center"><b>QQ群</b></td>
-    <td style="border: none;" align="center"><b>Telegram群</b></td>
-  </tr>
-</table>
+_✨ 每天到点看一眼 QQ：挖掘有价值信息并私聊推送。群少单群日报，群多按分类聚合。支持 **QQ (OneBot)**、**Telegram**、**Discord**。 ✨_
 
-
-_✨ 一个基于 AstrBot 的智能群聊分析插件，支持 **QQ (OneBot)**、**Telegram**、**Discord**，未来支持更多平台。 [灵感来源](https://github.com/LSTM-Kirigaya/openmcp-tutorial/tree/main/qq-group-summary)。 ✨_
-
-<img src="https://count.getloli.com/@astrbot-qq-group-daily-analysis?name=astrbot-qq-group-daily-analysis&theme=booru-jaypee&padding=6&offset=0&align=top&scale=1&pixelated=1&darkmode=auto" alt="count" />
+<img src="https://count.getloli.com/@astrbot-priestess-watching?name=astrbot-priestess-watching&theme=booru-jaypee&padding=6&offset=0&align=top&scale=1&pixelated=1&darkmode=auto" alt="count" />
 </div>
 
 
@@ -37,29 +19,29 @@ _✨ 一个基于 AstrBot 的智能群聊分析插件，支持 **QQ (OneBot)**�
   <tr>
     <td align="center" width="33.3%" valign="top">
       <p><b>Scrapbook (默认)</b></p>
-      <img src="https://fastly.jsdelivr.net/gh/SXP-Simon/astrbot_plugin_qq_group_daily_analysis@main/assets/scrapbook-demo.jpg" alt="scrapbook" width="100%">
+      <img src="https://fastly.jsdelivr.net/gh/xiaoyuyu6420/astrbot_plugin_priestess_watching@main/assets/scrapbook-demo.jpg" alt="scrapbook" width="100%">
     </td>
     <td align="center" width="33.3%" valign="top">
       <p><b>Retro Futurism</b></p>
-      <img src="https://fastly.jsdelivr.net/gh/SXP-Simon/astrbot_plugin_qq_group_daily_analysis@main/assets/retro_futurism-demo.jpg" alt="retro_futurism" width="100%">
+      <img src="https://fastly.jsdelivr.net/gh/xiaoyuyu6420/astrbot_plugin_priestess_watching@main/assets/retro_futurism-demo.jpg" alt="retro_futurism" width="100%">
     </td>
     <td align="center" width="33.3%" valign="top">
       <p><b>HatsuneMiku</b></p>
-      <img src="https://fastly.jsdelivr.net/gh/SXP-Simon/astrbot_plugin_qq_group_daily_analysis@main/assets/HatsuneMiku-demo.jpg" alt="HatsuneMiku" width="100%">
+      <img src="https://fastly.jsdelivr.net/gh/xiaoyuyu6420/astrbot_plugin_priestess_watching@main/assets/HatsuneMiku-demo.jpg" alt="HatsuneMiku" width="100%">
     </td>
   </tr>
   <tr>
     <td align="center" width="33.3%" valign="top">
       <p><b>Hack</b></p>
-      <img src="https://fastly.jsdelivr.net/gh/SXP-Simon/astrbot_plugin_qq_group_daily_analysis@main/assets/hack-demo.jpg" alt="hack" width="100%">
+      <img src="https://fastly.jsdelivr.net/gh/xiaoyuyu6420/astrbot_plugin_priestess_watching@main/assets/hack-demo.jpg" alt="hack" width="100%">
     </td>
     <td align="center" width="33.3%" valign="top">
       <p><b>ATRI</b></p>
-      <img src="https://fastly.jsdelivr.net/gh/SXP-Simon/astrbot_plugin_qq_group_daily_analysis@main/assets/ATRI-demo.jpg" alt="ATRI" width="100%">
+      <img src="https://fastly.jsdelivr.net/gh/xiaoyuyu6420/astrbot_plugin_priestess_watching@main/assets/ATRI-demo.jpg" alt="ATRI" width="100%">
     </td>
     <td align="center" width="33.3%" valign="top">
       <p><b>Simple</b></p>
-      <img src="https://fastly.jsdelivr.net/gh/SXP-Simon/astrbot_plugin_qq_group_daily_analysis@main/assets/format-demo.jpg" alt="simple" width="100%">
+      <img src="https://fastly.jsdelivr.net/gh/xiaoyuyu6420/astrbot_plugin_priestess_watching@main/assets/format-demo.jpg" alt="simple" width="100%">
     </td>
   </tr>
 </table>
@@ -69,23 +51,30 @@ _✨ 一个基于 AstrBot 的智能群聊分析插件，支持 **QQ (OneBot)**�
 
 ## 功能特色
 
-### 🎯 智能分析
-- **统计数据**: 全面的群聊活跃度和参与度统计
-- **话题分析**: 使用LLM智能提取群聊中的热门话题和讨论要点
-- **用户画像**: 基于聊天行为分析用户特征，分配个性化称号
-- **圣经识别**: 自动筛选出群聊中的精彩发言
+### ⏰ 定时日报（核心）
+- **到点看一眼**: 每天固定时间汇总有价值信息，默认私聊管理员
+- **群少 → 单群完整日报**: 每群独立出报告（图片/文本/HTML）
+- **群多 → 分类聚合**: 自定义「科技 / AI / …」分类，每个分类下挂群列表，到点按分类推摘要
+- **推送形态可配**: 每分类一条，或一条总简报按分类分块
 
-### 📊 可视化报告
-- **多种格式**: 支持图片和文本输出格式
-    - **精美图片**: 生成美观的可视化报告
-    - **HTML报告**: 生成清晰的HTML格式分析报告，可以进一步配置为外链形式发送
-    - **QQ群**: 支持上传到群相册和群文件，查阅黑历史友好
-- **详细数据**: 包含消息统计、时间分布、关键词、金句等
+### 🎯 价值挖掘
+- **话题分析**: LLM 提取有信息量、有深度的讨论
+- **信息差/商机/干货**: 优先可行动信息，宁缺毋滥
+- **统计数据**: 活跃度、时间分布等（完整日报模式）
+
+### 📡 主动推送（次要，可选）
+- **关键词即时**: 秒级命中 API key / 资源等
+- **整窗汇总**: 分钟级简报；多群时可按内容频道（密钥/资源/商机…）打包
+- 与定时日报独立，默认关闭
+
+### 📊 输出方式
+- **图片 / 文本 / HTML**，多套模板
+- QQ 可选上传群相册/群文件
 
 > [!warning]
 > **实验性开发中**：
 > - 多平台支持功能尚在开发中，当前仅支持QQ OneBot, Discord, Telegram。
-> - 旧版本稳定版在[QQ 分支](https://github.com/SXP-Simon/astrbot_plugin_qq_group_daily_analysis/tree/QQ)，仅 QQ 平台支持
+> - 旧版本稳定版在[QQ 分支](https://github.com/xiaoyuyu6420/astrbot_plugin_priestess_watching/tree/QQ)，仅 QQ 平台支持
 
 
 > [!CAUTION]
@@ -165,9 +154,12 @@ _✨ 一个基于 AstrBot 的智能群聊分析插件，支持 **QQ (OneBot)**�
 > 以下配置情况仅供参考，请仔细阅读插件配置页面中各个字段的说明，以插件配置中的说明为准。
 
 | 配置项 | 说明 | 备注 |
-|--------|------|--------|
-| 定时分析名单模式 + 列表 | 控制哪些群参与定时任务（报告时间点触发）。 | `whitelist + 空列表` 表示不注册定时任务 |
-| 增量分析名单模式 + 列表 | 控制哪些群走增量模式，其他群走传统全量。 | `whitelist + 空列表` 表示不启用增量周期任务 |
+|--------|------|------|
+| 推送形态 `delivery_mode` | `per_group` 单群完整日报；`by_category` 用户分类聚合 | 默认 `per_group` |
+| 用户分类 `categories` | `[{"name":"科技","groups":["群号"...]}]` | 仅 `by_category`；空则不注册定时 |
+| 分类推送 `category_push_mode` | `split` 每分类一条 / `merged` 一条分块 | 仅 `by_category` |
+| 定时分析名单模式 + 列表 | `per_group` 时控制哪些群参与定时 | `whitelist + 空列表` 不注册定时 |
+| 增量分析名单模式 + 列表 | 控制哪些群走增量（仅 `per_group`） | `by_category` 不走增量 |
 | PDF 格式的报告 | 初次使用需要使用 `/安装PDF` 命令安装依赖。需重启 AstrBot 生效。 | 输出格式需设为 PDF |
 | HTML 格式 (自建) | 配置 `html_base_url` 后，机器人会发送可直接点击的报告外链。 | 输出格式需设为 html |
 | 自定义 LLM 服务 | 用户可自行选取个人提供的服务商。 | 留空则回退到默认服务商 |
@@ -486,17 +478,17 @@ uv run scripts\debug_render.py -t HatsuneMiku -o debug_miku.html
 
 ❤️ 特别感谢所有 Contributors 的贡献 ❤️
 
-<a href="https://github.com/SXP-Simon/astrbot_plugin_qq_group_daily_analysis/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=SXP-Simon/astrbot_plugin_qq_group_daily_analysis&max=200&columns=14" />
+<a href="https://github.com/xiaoyuyu6420/astrbot_plugin_priestess_watching/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=xiaoyuyu6420/astrbot_plugin_priestess_watching&max=200&columns=14" />
 </a>
 
 ## Star History
 
-<a href="https://www.star-history.com/#SXP-Simon/astrbot_plugin_qq_group_daily_analysis&type=date&legend=top-left">
+<a href="https://www.star-history.com/#xiaoyuyu6420/astrbot_plugin_priestess_watching&type=date&legend=top-left">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=SXP-Simon/astrbot_plugin_qq_group_daily_analysis&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=SXP-Simon/astrbot_plugin_qq_group_daily_analysis&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=SXP-Simon/astrbot_plugin_qq_group_daily_analysis&type=date&legend=top-left" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=xiaoyuyu6420/astrbot_plugin_priestess_watching&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=xiaoyuyu6420/astrbot_plugin_priestess_watching&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=xiaoyuyu6420/astrbot_plugin_priestess_watching&type=date&legend=top-left" />
  </picture>
 </a>
 

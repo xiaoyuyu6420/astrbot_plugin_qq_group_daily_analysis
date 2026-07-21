@@ -347,7 +347,7 @@ async def debug_render(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Debug render tool for astrbot_plugin_qq_group_daily_analysis report templates."
+        description="Debug render tool for astrbot_plugin_priestess_watching report templates."
     )
     parser.add_argument(
         "-t",

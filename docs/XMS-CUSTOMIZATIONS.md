@@ -1,12 +1,35 @@
-# XMS 定制改动说明
+# 功能特性与设计说明
 
-> 本分支 `xms` 基于 `v4.10.8` 改造，相对上游的差异清单。
-> 用途：(1) 知道改了什么、为什么改；(2) 未来从上游 sync 更新时，作为重新应用定制的对照表。
+> 本文档记录本项目相对基础群聊分析能力的功能演进，供维护者查阅"为什么这么设计"。
 
 ## 一句话概括
 
-把上游「抓逆天言论、发回群」的群聊分析插件，改造成「挖掘有效信息 + 及时私聊推送管理员」的情报订阅版：  
-**保留输出方式与自定义程度**（图片/文本/HTML、模板、prompt），**去掉娱乐功能**（用户称号/MBTI、聊天质量锐评等）。
+**每天到点看一眼 QQ 有没有有价值的信息**：群少单群完整日报，群多按用户分类（科技/AI/自定义下挂群）聚合摘要；私聊管理员。  
+主动推送（实时监控）是次要模块。保留图片/文本/HTML、模板与 prompt 自定义。
+
+## 产品心智模型
+
+```
+定时日报（核心）
+├── per_group   → 每群完整日报
+└── by_category → 用户分类聚合（科技=[群…], AI=[群…]）
+                  ├── split  每分类一条
+                  └── merged 一条分块
+
+主动推送 / 实时监控（次要，默认关）
+└── 关键词 / 整窗；跨群时按「内容频道」打包（密钥/资源…）
+    （内容频道 ≠ 用户分类）
+```
+
+## 配置面板顺序（当前）
+
+```
+① admin_notify     推送给谁
+② auto_analysis    定时日报核心（时间 / delivery_mode / categories）
+③ analysis_features / prompts
+④ basic / llm / performance / …
+⑤ message_monitor  主动推送（最后）
+```
 
 ## 定制点总览
 
@@ -15,15 +38,16 @@
 | 1 | 管理员私聊推送（定时报告不发群） | `dispatcher.py`, `onebot_adapter.py`, `config_manager.py`, `analysis_application_service.py` | +222 / -27 |
 | 2 | 手动命令 `/群分析` 也改私聊 | `main.py` | +15 / -0 |
 | 3 | 信息差主题（替换原"逆天言论"） | `_conf_schema.json` 的 `prompts` | 见下 |
-| 4 | 配置面板重排（admin_notify / prompts / message_monitor 提到最上） | `_conf_schema.json` | 结构调整 |
+| 4 | 配置面板以定时为核心（实时垫底） | `_conf_schema.json` | 结构调整 |
 | 5 | **物理移除娱乐功能**（称号/MBTI/锐评） | 全层级（domain/infrastructure/application/templates/config） | 功能收敛 + 死代码清除 |
 | 6 | 元数据 + logo | `metadata.yaml`, `logo.png` | 版本/作者/占位图 |
 | 7 | 单群情报场景默认值 | `_conf_schema.json`, `config_manager.py` | 默认更贴近「私聊 + 单群」 |
 | 8 | 私聊推送可靠性（图片失败回退文本） | `dispatcher.py` | 及时送达 |
-| 9 | **实时消息监控（盯人预警）** | `message_monitor_service.py`(新), `main.py`, `config_manager.py`, `_conf_schema.json` | +~300 行 |
+| 9 | **实时消息监控（盯人预警，次要）** | `message_monitor_service.py`(新), `main.py`, `config_manager.py`, `_conf_schema.json` | +~300 行 |
 | 10 | **关键词即时推送模式** | `message_monitor_service.py`, `config_manager.py`, `_conf_schema.json` | +~150 行 |
 | 11 | **智能降噪层** | `noise_reducer.py`(新), `message_monitor_service.py`, `config_manager.py`, `_conf_schema.json` | +~300 行 |
-| 12 | **跨群智能聚合** | `message_monitor_service.py`, `config_manager.py`, `_conf_schema.json` | +~200 行 |
+| 12 | **跨群智能聚合（实时内容频道）** | `message_monitor_service.py`, `config_manager.py`, `_conf_schema.json` | +~200 行 |
+| 13 | **定时用户分类聚合（by_category）** | `push_category.py`, `scheduled_category_digest_service.py`, `auto_scheduler.py`, `config_manager.py`, `_conf_schema.json` | 新增 |
 
 ---
 
@@ -66,16 +90,15 @@
 - **话题分析 prompt** → 改为「有讨论价值的话题」，聚焦有信息量、有深度、有结论的讨论，忽略纯闲聊灌水。
 - description 字段同步标注「信息差/商机/干货提取提示词（定制版，原金句分析）」。
 
-### 定制点 4：配置面板重排
+### 定制点 4：配置面板以定时为核心
 
-**改动**（`_conf_schema.json` 顶层 object 顺序）：把改动过的配置组提到最前面，方便后续微调：
+**改动**（`_conf_schema.json` 顶层 object 顺序）：
 ```
-① admin_notify        ← 新增的私聊开关（最上）
-② prompts             ← 主题核心，方便调 prompt
-③ analysis_features   ← 功能开关
-④ auto_analysis
-⑤ basic
-...（其余按原序）
+① admin_notify        ← 推送给谁
+② auto_analysis       ← 定时日报核心（delivery_mode / categories）
+③ analysis_features / prompts
+④ basic / llm / …
+⑤ message_monitor     ← 主动推送（最后，次要）
 ```
 
 ### 定制点 5：物理移除娱乐功能，只留有效信息挖掘
@@ -104,18 +127,18 @@
 6. domain 层：删除 `UserTitle`、`QualityReview`、`QualityDimension` 类；`IAnalysisProvider` 签名改为 3 元组
 7. 若干模板 `quote_item.html` / `topic_item.html` 标题从「群圣经 / 热门话题」改为情报向文案
 
-### 定制点 6：元数据 + logo
+### 定制点 6：品牌标识
 
 **`metadata.yaml`**：
-| 字段 | 上游 | 定制 |
-|------|------|------|
-| `display_name` | 群分析总结插件 | 世健世健你的好友 |
-| `version` | v4.10.8 | v4.11.0-xms |
-| `author` | SXP-Simon | SXP-Simon (xms 定制 by xiaoyuyu6420) |
-| `desc` | 原描述 | 标注「定制版 + 管理员私聊推送 + 信息差/商机/干货」 |
-| `repo` | 上游仓库 | https://github.com/xiaoyuyu6420/astrbot_plugin_qq_group_daily_analysis |
+| 字段 | 当前值 |
+|------|--------|
+| `name` | `astrbot_plugin_priestess_watching` |
+| `display_name` | 我一直在看着你 |
+| `version` | v1.0.0 |
+| `author` | xiaoyuyu6420 |
+| `repo` | https://github.com/xiaoyuyu6420/astrbot_plugin_priestess_watching |
 
-**`logo.png`**：原图（225×225, 104KB）→ 1×1 透明占位（69B）。目的是在 astrbot 插件列表里不显示原图。
+**品牌图**：`assets/priestess.png`（Priestess 角色图，README 顶部展示）。`logo.png` 保持 AstrBot 插件市场占位惯例（1×1 透明）。
 
 ### 定制点 7：单群情报场景默认值
 
@@ -268,9 +291,9 @@ AstrBot 对已安装插件会保留现有配置文件；schema 默认值只在**
 2. 配置面板里「实时监控」与「定时日报」概念混在一组文案里，且「单群分析 vs 多群汇总」没有一等配置项，只有埋在降噪区附近的 `enable_cross_group` 布尔开关。
 
 **面板结构（当前）**：
-- `message_monitor` 标题：`① 实时消息监控（与下方「定时分析」无关）`
-- `auto_analysis` 标题：`② 定时日报分析（与上方「实时监控」无关）`
-- 实时链路内部顺序：总开关 → **触发方式** `monitor_mode`（keyword/window）→ **分析范围** `window_scope`（per_group/cross_group）→ 监控群/目标QQ/推送人 → window/keyword 专用参数 → 降噪
+- `auto_analysis`：定时日报核心（靠前）
+- `message_monitor`：主动推送 · 实时监控（次要，靠后）；内部「内容频道」≠ 定时「用户分类」
+- 实时链路内部顺序：总开关 → **触发方式** `monitor_mode`（keyword/window）→ **分析范围** `window_scope`（per_group/cross_group）→ 内容频道订阅 → 监控群/目标QQ/推送人 → window/keyword 专用参数 → 降噪
 
 **开启多群汇总**：
 - 新配置：`message_monitor.window_scope = "cross_group"`（单群独立 = `"per_group"`，默认）
@@ -339,6 +362,45 @@ _flush_all() 检测 window_scope / enable_cross_group
 - `config_manager.py`：`get_window_scope()` + `is_cross_group_enabled()`（读 `window_scope`，兼容旧 `enable_cross_group`）
 - `_conf_schema.json`：`message_monitor` 用 `window_scope` 一等选项表达单群/多群；组文案与 `auto_analysis` 明确拆成实时 vs 定时
 
+### 定制点 13：定时用户分类聚合（by_category）
+
+**问题**：群多时，到点对每个群出完整日报噪音大、看不过来。真实需求是「科技群一块看、AI 群一块看」，分类是**用户自定义的群桶**，不是消息内容类型。
+
+**语义边界**：
+| 概念 | 归属 | 例子 |
+|------|------|------|
+| 用户分类 | 定时日报 `auto_analysis` | 科技=[群A,群B]，AI=[群C] |
+| 内容频道 | 实时监控 `message_monitor` | apikey / resource / deal / … |
+
+**配置**（`auto_analysis`）：
+- `delivery_mode`：`per_group`（默认）| `by_category`
+- `category_push_mode`：`split`（每分类一条）| `merged`（一条分块）
+- `categories`：JSON 数组，如 `[{"name":"科技","groups":["111","222"]},{"name":"AI","groups":["333"]}]`
+- `scheduled_group_list*`：仅 `per_group` 使用
+
+**运行时**：
+```
+_run_scheduled_report()
+  by_category → ScheduledCategoryDigestService.run()
+                每分类 × 每群：拉消息 → 清洗 → LLM 信息差/话题
+                → 指纹去重 → pack(split|merged) → 私聊管理员
+  per_group   → 原 _get_scheduled_targets 逐群完整日报
+```
+
+**约束**：
+- by_category 不注册增量任务
+- categories 空 → 不注册定时 / 触发时打 error 日志并跳过
+- 分类内群仍过 `basic` 白名单；未通过则跳过
+- 同一群可出现在多个分类
+- 输出首版为文本 digest（非完整图片日报合并）
+
+**新增/修改文件**：
+- `src/domain/entities/push_category.py`
+- `src/application/services/scheduled_category_digest_service.py`
+- `src/infrastructure/scheduler/auto_scheduler.py`
+- `src/infrastructure/config/config_manager.py`
+- `_conf_schema.json` / docs / metadata / README
+
 ---
 
 ## 行为矩阵
@@ -361,14 +423,20 @@ _flush_all() 检测 window_scope / enable_cross_group
    - AstrBot 通用设置 → `admins_id`（推荐，所有插件共享）
    - 或插件配置 → `admin_notify.extra_admin_qq`
 3. **napcat 登录的 QQ 与管理员 QQ 互为好友**：OneBot 的 `send_private_msg` 要求双方好友关系，否则发不出（日志会显示「私聊发送 xxx 返回失败」）。
-4. **配置单群白名单 + 定时任务**：
+4. **配置群权限 + 定时任务**：
    - `basic.group_list_mode` = `whitelist`
-   - `basic.group_list` = `["onebot:GroupMessage:你的群号"]`
-   - `auto_analysis.scheduled_group_list` = 同上
+   - `basic.group_list` = 你要看的群（UMO 或群号）
    - `auto_analysis.auto_analysis_time`（默认 `["23:00"]`）
-5. **注意**：`whitelist` + 空列表 = 没有任何群可用 / 不会开定时任务，必须先填群号。
+   - **群少（单群完整日报）**：
+     - `delivery_mode` = `per_group`
+     - `scheduled_group_list` = 同上
+   - **群多（分类聚合）**：
+     - `delivery_mode` = `by_category`
+     - `category_push_mode` = `split` 或 `merged`
+     - `categories` = `[{"name":"科技","groups":["群A","群B"]},{"name":"AI","groups":["群C"]}]`
+5. **注意**：`basic` 白名单空 = 没有任何群可用；`per_group` 名单空或 `by_category` 无分类 = 不注册定时。
 
-### 启用实时消息监控（盯人预警）
+### 启用实时消息监控（主动推送，次要）
 
 1. **开启开关**：`message_monitor.enable_monitor` = `true`
 2. **填监控群**（必填）：`message_monitor.monitored_groups` = `["群号"]`（插件会攒这些群里所有人的消息作为上下文）
@@ -401,25 +469,9 @@ _flush_all() 检测 window_scope / enable_cross_group
 
 ---
 
-## 未来从上游 sync 更新的方法
+## 维护备忘
 
-```bash
-# 拉取上游最新
-git fetch upstream
-
-# 基于 xms 分支 merge 上游 main（或最新 tag）
-git checkout xms
-git merge upstream/main
-# 如有冲突，主要冲突点会落在上述 6 个定制文件上
-# 解决冲突时：保留定制逻辑，合并上游的功能更新
-
-# 验证：对照本文档的「定制点总览」表，确认每个定制点都还在
-git diff v4.10.8..HEAD -- src/infrastructure/reporting/dispatcher.py
-```
-
-**冲突高发文件**（按概率排序）：
-1. `_conf_schema.json` —— 上游几乎每次发版都改 prompt 或加配置项
-2. `main.py` —— 上游改命令处理逻辑时会冲突
-3. `dispatcher.py` / `analysis_application_service.py` —— 上游重构报告分发时会冲突
-
-sync 前务必先看上游 CHANGELOG.md，评估这次更新是否触及定制点。
+如需对照功能演进历史，可查阅 `CHANGELOG.md`。冲突高发文件（按改动频率排序）：
+1. `_conf_schema.json` —— 配置面板高频调整
+2. `main.py` —— 命令处理逻辑
+3. `dispatcher.py` / `analysis_application_service.py` —— 报告分发与并发逻辑

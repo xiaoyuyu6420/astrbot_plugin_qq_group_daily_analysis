@@ -7,9 +7,8 @@ import asyncio
 import time as time_mod
 from typing import Any
 
-from apscheduler.triggers.cron import CronTrigger
-
 from ...application.services.analysis_application_service import DuplicateGroupTaskError
+from ...shared.constants import PLUGIN_NAME
 from ...shared.trace_context import TraceContext
 from ...utils.logger import logger
 from ..messaging.message_sender import MessageSender
@@ -152,7 +151,9 @@ class AutoScheduler:
         self._terminating = False
 
         if not self.config_manager.is_auto_analysis_enabled():
-            logger.info("定时分析名单为空且为白名单模式，不注册定时任务。")
+            logger.info(
+                "定时分析未开启（per_group 名单为空 或 by_category 无分类），不注册定时任务。"
+            )
             return
 
         scheduler = context.cron_manager.scheduler
@@ -162,8 +163,14 @@ class AutoScheduler:
         logger.info("注册定时分析报告任务...")
         self._schedule_report_time_jobs(scheduler)
 
-        # 2. 只有在增量功能总开关开启时，才注册全天候的增量提取任务
-        if self.config_manager.get_incremental_enabled():
+        # 2. 增量只服务 per_group；by_category 固定走价值摘要，不注册增量任务
+        delivery_mode = "per_group"
+        if hasattr(self.config_manager, "get_delivery_mode"):
+            delivery_mode = self.config_manager.get_delivery_mode()
+
+        if delivery_mode == "by_category":
+            logger.info("delivery_mode=by_category，跳过增量任务注册（仅分类摘要）。")
+        elif self.config_manager.get_incremental_enabled():
             logger.info("增量分析功能已开启，正在注册全天增量提取任务...")
             self._schedule_incremental_cron_jobs(scheduler)
         else:
@@ -174,6 +181,8 @@ class AutoScheduler:
 
         这些任务根据运行时解析出的生效模式，决定执行传统的全量分析还是增量汇报。
         """
+        from apscheduler.triggers.cron import CronTrigger
+
         time_config = self.config_manager.get_auto_analysis_time()
         if isinstance(time_config, str):
             time_config = [time_config]
@@ -184,7 +193,7 @@ class AutoScheduler:
                 hour, minute = t_str.split(":")
 
                 trigger = CronTrigger(hour=int(hour), minute=int(minute))
-                job_id = f"astrbot_plugin_qq_group_daily_analysis_trigger_{i}"
+                job_id = f"{PLUGIN_NAME}_trigger_{i}"
 
                 scheduler.add_job(
                     self._run_scheduled_report,
@@ -205,6 +214,8 @@ class AutoScheduler:
 
         这类任务仅执行增量数据的提取；而报告生成阶段在配置的每日分析时间点进行。
         """
+        from apscheduler.triggers.cron import CronTrigger
+
         active_start_hour = self.config_manager.get_incremental_active_start_hour()
         active_end_hour = self.config_manager.get_incremental_active_end_hour()
         interval_minutes = self.config_manager.get_incremental_interval_minutes()
@@ -341,14 +352,24 @@ class AutoScheduler:
     async def _run_scheduled_report(self):
         """统一的定时分析入口。
 
-        在配置的时间点触发，解析所有目标群并根据其分析模式分发任务：
-        - traditional: 执行全量拉取分析并发送报告
-        - incremental: 执行增量最终报告阶段（合并并汇报）
+        在配置的时间点触发：
+        - delivery_mode=by_category: 用户分类聚合摘要（文本私聊）
+        - delivery_mode=per_group: 逐群完整日报
+          - traditional: 全量拉取分析并发送报告
+          - incremental: 增量最终报告阶段
         """
         if self._terminating:
             return
         try:
-            logger.info("定时报告触发 — 开始解析调度目标")
+            delivery_mode = "per_group"
+            if hasattr(self.config_manager, "get_delivery_mode"):
+                delivery_mode = self.config_manager.get_delivery_mode()
+
+            if delivery_mode == "by_category":
+                await self._run_category_digest_report()
+                return
+
+            logger.info("定时报告触发 — 开始解析调度目标 (per_group)")
 
             all_targets = await self._get_scheduled_targets()
 
@@ -417,6 +438,39 @@ class AutoScheduler:
 
         except Exception as e:
             logger.error(f"定时报告执行失败: {e}", exc_info=True)
+
+    async def _run_category_digest_report(self):
+        """delivery_mode=by_category：按用户分类聚合价值摘要并私聊管理员。"""
+        from ...application.services.scheduled_category_digest_service import (
+            ScheduledCategoryDigestService,
+        )
+
+        logger.info("定时报告触发 — 分类聚合模式 (by_category)")
+        platform_id = None
+        try:
+            # 单平台场景直接取；多平台由 digest 内按群解析 adapter
+            if (
+                hasattr(self.bot_manager, "get_platform_count")
+                and self.bot_manager.get_platform_count() == 1
+            ):
+                platform_id = self.bot_manager.get_platform_ids()[0]
+        except Exception:
+            platform_id = None
+
+        service = ScheduledCategoryDigestService(
+            config_manager=self.config_manager,
+            analysis_service=self.analysis_service,
+            bot_manager=self.bot_manager,
+            report_dispatcher=self.report_dispatcher,
+        )
+        result = await service.run(platform_id=platform_id)
+        logger.info(
+            "分类聚合定时完成: success=%s, messages=%s, sent=%s, reason=%s",
+            result.get("success"),
+            result.get("message_count"),
+            result.get("messages_sent"),
+            result.get("reason"),
+        )
 
     async def _perform_auto_analysis_for_group_with_timeout(
         self, group_id: str, target_platform_id: str | None = None
@@ -833,7 +887,7 @@ class AutoScheduler:
         for platform_id, bot_instance in self.bot_manager._bot_instances.items():
             # 检查该平台是否启用了此插件
             if not self.bot_manager.is_plugin_enabled(
-                platform_id, "astrbot_plugin_qq_group_daily_analysis"
+                platform_id, PLUGIN_NAME
             ):
                 logger.debug(f"平台 {platform_id} 未启用此插件，跳过获取群列表")
                 continue

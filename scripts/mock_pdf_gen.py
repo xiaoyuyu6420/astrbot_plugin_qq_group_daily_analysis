@@ -10,7 +10,7 @@ from pathlib import Path
 # Add project root to sys.path so we can import 'astrbot' and plugin modules
 # In docker environment:
 # /AstrBot
-# /AstrBot/data/plugins/astrbot_plugin_qq_group_daily_analysis
+# /AstrBot/data/plugins/astrbot_plugin_priestess_watching
 current_dir = os.path.dirname(os.path.abspath(__file__))
 plugin_root = os.path.abspath(os.path.join(current_dir, ".."))
 sys.path.insert(0, plugin_root)
