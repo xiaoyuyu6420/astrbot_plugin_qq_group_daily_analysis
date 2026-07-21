@@ -67,8 +67,8 @@ class ReportFormat(str, Enum):
 
 
 # 插件元数据
-PLUGIN_NAME = "astrbot_plugin_priestess_watching"
-PLUGIN_VERSION = "2.0.0"
+PLUGIN_NAME = "astrbot_plugin_qq_group_daily_analysis"
+PLUGIN_VERSION = "4.12.0-xms"
 
 # 平台标识符
 SUPPORTED_PLATFORMS = [

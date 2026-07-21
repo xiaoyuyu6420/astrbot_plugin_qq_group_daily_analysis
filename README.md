@@ -1,14 +1,14 @@
 <div align="center">
 
-# 我一直在看着你
+# 世健世健你的好友
 
-[![Plugin Version](https://img.shields.io/badge/Latest_Version-v1.0.0-blue.svg?style=for-the-badge&color=76bad9)](https://github.com/xiaoyuyu6420/astrbot_plugin_priestess_watching)
+[![Plugin Version](https://img.shields.io/badge/Latest_Version-v4.12.0--xms-blue.svg?style=for-the-badge&color=76bad9)](https://github.com/xiaoyuyu6420/astrbot_plugin_qq_group_daily_analysis)
 [![AstrBot](https://img.shields.io/badge/AstrBot-Plugin-ff69b4?style=for-the-badge)](https://github.com/AstrBotDevs/AstrBot)
 [![License](https://img.shields.io/badge/License-MIT-green.svg?style=for-the-badge)](LICENSE)
 
 _✨ 每天到点看一眼 QQ：挖掘有价值信息并私聊推送。群少单群日报，群多按分类聚合。支持 **QQ (OneBot)**、**Telegram**、**Discord**。 ✨_
 
-<img src="https://count.getloli.com/@astrbot-priestess-watching?name=astrbot-priestess-watching&theme=booru-jaypee&padding=6&offset=0&align=top&scale=1&pixelated=1&darkmode=auto" alt="count" />
+<img src="https://count.getloli.com/@astrbot-qq-group-daily-analysis?name=astrbot-qq-group-daily-analysis&theme=booru-jaypee&padding=6&offset=0&align=top&scale=1&pixelated=1&darkmode=auto" alt="count" />
 </div>
 
 
@@ -19,29 +19,29 @@ _✨ 每天到点看一眼 QQ：挖掘有价值信息并私聊推送。群少单
   <tr>
     <td align="center" width="33.3%" valign="top">
       <p><b>Scrapbook (默认)</b></p>
-      <img src="https://fastly.jsdelivr.net/gh/xiaoyuyu6420/astrbot_plugin_priestess_watching@main/assets/scrapbook-demo.jpg" alt="scrapbook" width="100%">
+      <img src="https://fastly.jsdelivr.net/gh/xiaoyuyu6420/astrbot_plugin_qq_group_daily_analysis@main/assets/scrapbook-demo.jpg" alt="scrapbook" width="100%">
     </td>
     <td align="center" width="33.3%" valign="top">
       <p><b>Retro Futurism</b></p>
-      <img src="https://fastly.jsdelivr.net/gh/xiaoyuyu6420/astrbot_plugin_priestess_watching@main/assets/retro_futurism-demo.jpg" alt="retro_futurism" width="100%">
+      <img src="https://fastly.jsdelivr.net/gh/xiaoyuyu6420/astrbot_plugin_qq_group_daily_analysis@main/assets/retro_futurism-demo.jpg" alt="retro_futurism" width="100%">
     </td>
     <td align="center" width="33.3%" valign="top">
       <p><b>HatsuneMiku</b></p>
-      <img src="https://fastly.jsdelivr.net/gh/xiaoyuyu6420/astrbot_plugin_priestess_watching@main/assets/HatsuneMiku-demo.jpg" alt="HatsuneMiku" width="100%">
+      <img src="https://fastly.jsdelivr.net/gh/xiaoyuyu6420/astrbot_plugin_qq_group_daily_analysis@main/assets/HatsuneMiku-demo.jpg" alt="HatsuneMiku" width="100%">
     </td>
   </tr>
   <tr>
     <td align="center" width="33.3%" valign="top">
       <p><b>Hack</b></p>
-      <img src="https://fastly.jsdelivr.net/gh/xiaoyuyu6420/astrbot_plugin_priestess_watching@main/assets/hack-demo.jpg" alt="hack" width="100%">
+      <img src="https://fastly.jsdelivr.net/gh/xiaoyuyu6420/astrbot_plugin_qq_group_daily_analysis@main/assets/hack-demo.jpg" alt="hack" width="100%">
     </td>
     <td align="center" width="33.3%" valign="top">
       <p><b>ATRI</b></p>
-      <img src="https://fastly.jsdelivr.net/gh/xiaoyuyu6420/astrbot_plugin_priestess_watching@main/assets/ATRI-demo.jpg" alt="ATRI" width="100%">
+      <img src="https://fastly.jsdelivr.net/gh/xiaoyuyu6420/astrbot_plugin_qq_group_daily_analysis@main/assets/ATRI-demo.jpg" alt="ATRI" width="100%">
     </td>
     <td align="center" width="33.3%" valign="top">
       <p><b>Simple</b></p>
-      <img src="https://fastly.jsdelivr.net/gh/xiaoyuyu6420/astrbot_plugin_priestess_watching@main/assets/format-demo.jpg" alt="simple" width="100%">
+      <img src="https://fastly.jsdelivr.net/gh/xiaoyuyu6420/astrbot_plugin_qq_group_daily_analysis@main/assets/format-demo.jpg" alt="simple" width="100%">
     </td>
   </tr>
 </table>
@@ -74,7 +74,7 @@ _✨ 每天到点看一眼 QQ：挖掘有价值信息并私聊推送。群少单
 > [!warning]
 > **实验性开发中**：
 > - 多平台支持功能尚在开发中，当前仅支持QQ OneBot, Discord, Telegram。
-> - 旧版本稳定版在[QQ 分支](https://github.com/xiaoyuyu6420/astrbot_plugin_priestess_watching/tree/QQ)，仅 QQ 平台支持
+> - 旧版本稳定版在[QQ 分支](https://github.com/xiaoyuyu6420/astrbot_plugin_qq_group_daily_analysis/tree/QQ)，仅 QQ 平台支持
 
 
 > [!CAUTION]
@@ -478,17 +478,17 @@ uv run scripts\debug_render.py -t HatsuneMiku -o debug_miku.html
 
 ❤️ 特别感谢所有 Contributors 的贡献 ❤️
 
-<a href="https://github.com/xiaoyuyu6420/astrbot_plugin_priestess_watching/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=xiaoyuyu6420/astrbot_plugin_priestess_watching&max=200&columns=14" />
+<a href="https://github.com/xiaoyuyu6420/astrbot_plugin_qq_group_daily_analysis/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=xiaoyuyu6420/astrbot_plugin_qq_group_daily_analysis&max=200&columns=14" />
 </a>
 
 ## Star History
 
-<a href="https://www.star-history.com/#xiaoyuyu6420/astrbot_plugin_priestess_watching&type=date&legend=top-left">
+<a href="https://www.star-history.com/#xiaoyuyu6420/astrbot_plugin_qq_group_daily_analysis&type=date&legend=top-left">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=xiaoyuyu6420/astrbot_plugin_priestess_watching&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=xiaoyuyu6420/astrbot_plugin_priestess_watching&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=xiaoyuyu6420/astrbot_plugin_priestess_watching&type=date&legend=top-left" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=xiaoyuyu6420/astrbot_plugin_qq_group_daily_analysis&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=xiaoyuyu6420/astrbot_plugin_qq_group_daily_analysis&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=xiaoyuyu6420/astrbot_plugin_qq_group_daily_analysis&type=date&legend=top-left" />
  </picture>
 </a>
 

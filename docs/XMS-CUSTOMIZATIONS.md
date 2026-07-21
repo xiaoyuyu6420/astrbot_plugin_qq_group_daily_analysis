@@ -132,13 +132,13 @@
 **`metadata.yaml`**：
 | 字段 | 当前值 |
 |------|--------|
-| `name` | `astrbot_plugin_priestess_watching` |
-| `display_name` | 我一直在看着你 |
-| `version` | v1.0.0 |
-| `author` | xiaoyuyu6420 |
-| `repo` | https://github.com/xiaoyuyu6420/astrbot_plugin_priestess_watching |
+| `name` | `astrbot_plugin_qq_group_daily_analysis` |
+| `display_name` | 世健世健你的好友 |
+| `version` | v4.12.0-xms |
+| `author` | SXP-Simon (xms 定制 by xiaoyuyu6420) |
+| `repo` | https://github.com/xiaoyuyu6420/astrbot_plugin_qq_group_daily_analysis |
 
-**品牌图**：`assets/priestess.png`（Priestess 角色图，README 顶部展示）。`logo.png` 保持 AstrBot 插件市场占位惯例（1×1 透明）。
+**说明**：沿用上游插件识别名，保证 AstrBot 本地目录/更新链路不因改名断掉；版本走 `v4.x.x-xms` 定制线。
 
 ### 定制点 7：单群情报场景默认值
 
