@@ -14,8 +14,10 @@
 import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
 from typing import Any
+
+from ...shared.timezone import from_timestamp as _tz_from_ts
+from ...shared.timezone import now as _tz_now
 
 
 @dataclass
@@ -126,7 +128,7 @@ class IncrementalBatch:
         """获取批次摘要信息"""
         return {
             "batch_id": self.batch_id[:8],
-            "timestamp": datetime.fromtimestamp(self.timestamp).strftime(
+            "timestamp": _tz_from_ts(self.timestamp).strftime(
                 "%Y-%m-%d %H:%M:%S"
             ),
             "messages_count": self.messages_count,
@@ -264,10 +266,10 @@ class IncrementalState:
             str: 如 "2024-01-15" 或 "2024-01-14 ~ 2024-01-15"
         """
         if self.window_start <= 0 or self.window_end <= 0:
-            return datetime.now().strftime("%Y-%m-%d")
+            return _tz_now().strftime("%Y-%m-%d")
 
-        start_date = datetime.fromtimestamp(self.window_start).strftime("%Y-%m-%d")
-        end_date = datetime.fromtimestamp(self.window_end).strftime("%Y-%m-%d")
+        start_date = _tz_from_ts(self.window_start).strftime("%Y-%m-%d")
+        end_date = _tz_from_ts(self.window_end).strftime("%Y-%m-%d")
 
         if start_date == end_date:
             return end_date
@@ -291,7 +293,7 @@ class IncrementalState:
             "participants": len(self.all_participant_ids),
             "total_tokens": self.total_token_usage.get("total_tokens", 0),
             "last_analysis_time": (
-                datetime.fromtimestamp(self.updated_at).strftime("%H:%M:%S")
+                _tz_from_ts(self.updated_at).strftime("%H:%M:%S")
                 if self.updated_at
                 else "无"
             ),

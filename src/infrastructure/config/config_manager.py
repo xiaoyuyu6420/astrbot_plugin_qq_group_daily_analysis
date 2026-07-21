@@ -911,10 +911,44 @@ class ConfigManager:
         except Exception as e:
             logger.error(f"保存配置失败: {e}")
 
-    def reload_config(self):
-        """重新加载配置"""
+    def get_timezone(self) -> str:
+        """获取配置的时区名（IANA，如 Asia/Shanghai）。
+
+        留空或非法由 shared.timezone.configure_timezone 兜底回退，
+        这里只如实返回用户填的值。
+        """
+        return self._get_group("basic").get("timezone", "") or ""
+
+    def reload_config(self, on_applied=None):
+        """热更新入口。
+
+        背景：AstrBot 没有官方 on_config_updated 钩子（Star 基类只有
+        initialize/terminate），ConfigManager.config 本身是 dict 引用，
+        所有 getter 已经是实时读取 —— 配置值本身是热的。
+        真正"改完要重启才生效"的只有两类一次性消费：
+            1) GlobalRateLimiter（启动时调用 get_instance 设并发上限）
+            2) AutoScheduler 注册的 APScheduler cron 任务
+        以及时区缓存（shared.timezone._active_tz）。
+
+        本函数做三件事：
+            1. configure_timezone(get_timezone()) 刷时区缓存
+            2. 调用 on_applied 回调（由 main.py 注入：重排调度 + 重配限流器）
+            3. 日志记录
+
+        Args:
+            on_applied: 可选的回调，签名 () -> None。由 main.py 在初始化时
+                注入，避免 ConfigManager 反向依赖 auto_scheduler/resilience。
+        """
         try:
             logger.info("重新加载配置...")
+            # 1. 时区（即使没回调也要刷 —— 业务模块靠 shared.timezone.now()）
+            from ...shared.timezone import configure_timezone
+
+            tz_name = configure_timezone(self.get_timezone())
+            logger.info("时区生效: %s", tz_name)
+            # 2. 让 main.py 注入的回调做剩下的重活（重排调度、重配限流器）
+            if on_applied is not None:
+                on_applied()
             logger.info("配置重载完成")
         except Exception as e:
             logger.error(f"重新加载配置失败: {e}")

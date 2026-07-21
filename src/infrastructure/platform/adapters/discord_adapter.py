@@ -11,6 +11,7 @@ Discord 平台适配器
 from datetime import datetime, timedelta
 from typing import Any
 
+from ....shared.timezone import now as _tz_now
 from ....utils.logger import logger
 
 try:
@@ -147,7 +148,7 @@ class DiscordAdapter(PlatformAdapter):
             if since_ts and since_ts > 0:
                 start_time = datetime.fromtimestamp(since_ts)
             else:
-                end_time = datetime.now()
+                end_time = _tz_now()
                 start_time = end_time - timedelta(days=days)
 
             messages = []

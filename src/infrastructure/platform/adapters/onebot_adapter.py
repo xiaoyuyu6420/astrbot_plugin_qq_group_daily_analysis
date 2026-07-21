@@ -8,7 +8,7 @@ import asyncio
 import base64
 import os
 import time
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Any
 
 import aiohttp
@@ -23,6 +23,8 @@ from ....domain.value_objects.unified_message import (
     MessageContentType,
     UnifiedMessage,
 )
+from ....shared.timezone import from_timestamp as _tz_from_ts
+from ....shared.timezone import now as _tz_now
 from ....utils.logger import logger
 from ..base import PlatformAdapter
 
@@ -157,7 +159,7 @@ class OneBotAdapter(PlatformAdapter):
             if since_ts and since_ts > 0:
                 start_timestamp = since_ts
             else:
-                end_time_dt = datetime.now()
+                end_time_dt = _tz_now()
                 start_time_dt = end_time_dt - timedelta(days=days)
                 start_timestamp = int(start_time_dt.timestamp())
 
@@ -166,7 +168,7 @@ class OneBotAdapter(PlatformAdapter):
 
             logger.info(
                 f"OneBot 开始分页回溯消息: 群 {group_id}, "
-                f"起始时间 {datetime.fromtimestamp(start_timestamp).strftime('%Y-%m-%d %H:%M:%S')}, "
+                f"起始时间 {_tz_from_ts(start_timestamp).strftime('%Y-%m-%d %H:%M:%S')}, "
                 f"上限 {max_count} 条"
             )
 
@@ -230,7 +232,7 @@ class OneBotAdapter(PlatformAdapter):
                         continue
 
                     # 时间范围判定
-                    if start_timestamp <= msg_time <= int(datetime.now().timestamp()):
+                    if start_timestamp <= msg_time <= int(_tz_now().timestamp()):
                         all_raw_messages.append(raw_msg)
 
                 # 提取锚点。

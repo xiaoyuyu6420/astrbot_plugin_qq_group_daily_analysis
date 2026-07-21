@@ -4,9 +4,9 @@
 使用 AstrBot 的 put_kv_data/get_kv_data 实现
 """
 
-import datetime
 from typing import Any
 
+from ...shared.timezone import now as _tz_now
 from ...utils.logger import logger
 
 
@@ -50,7 +50,7 @@ class HistoryManager:
             bool: 存储是否成功
         """
         try:
-            now = datetime.datetime.now()
+            now = _tz_now()
             if not date_str:
                 date_str = now.strftime("%Y-%m-%d")
             if not time_str:

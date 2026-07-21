@@ -273,6 +273,12 @@
                 "description": "发送文本/表情回复",
                 "default": false,
                 "hint": "开启后，/群分析 将通过发送文本消息提示进度；关闭（默认）则使用表情回应。"
+            },
+            "timezone": {
+                "type": "string",
+                "description": "时区",
+                "default": "Asia/Shanghai",
+                "hint": "影响定时任务触发时间、日报日期戳、消息时间窗口判断。留空或填错会回退到 Asia/Shanghai。常见值：Asia/Shanghai / Asia/Tokyo / UTC / America/New_York。改完执行 /分析设置 reload 生效。"
             }
         }
     },

@@ -6,8 +6,10 @@
 """
 
 import json
-from datetime import datetime
 from pathlib import Path
+
+from ...shared.timezone import now as _tz_now
+from ...shared.timezone import today_str as _tz_today_str
 from typing import Any
 
 from ...utils.logger import logger
@@ -62,19 +64,19 @@ class HistoryRepository:
             bool: 保存成功返回 True，发生异常返回 False
         """
         try:
-            date_str = date_str or datetime.now().strftime("%Y-%m-%d")
+            date_str = date_str or _tz_today_str()
             history = self.load_group_history(group_id)
 
             # 注入执行时间戳
             if "timestamp" not in result:
-                result["timestamp"] = datetime.now().isoformat()
+                result["timestamp"] = _tz_now().isoformat()
 
             # 结构化存储：二级映射 {date -> result}
             if "daily" not in history:
                 history["daily"] = {}
 
             history["daily"][date_str] = result
-            history["last_updated"] = datetime.now().isoformat()
+            history["last_updated"] = _tz_now().isoformat()
 
             # 原子写入（覆盖）
             history_path = self._get_group_history_path(group_id)
@@ -173,7 +175,7 @@ class HistoryRepository:
             # 计算截止日期边界
             from datetime import timedelta
 
-            cutoff = (datetime.now() - timedelta(days=keep_days)).strftime("%Y-%m-%d")
+            cutoff = (_tz_now() - timedelta(days=keep_days)).strftime("%Y-%m-%d")
 
             # 筛选已过期的日期
             dates_to_delete = [date for date in daily.keys() if date < cutoff]

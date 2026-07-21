@@ -64,9 +64,9 @@ class LLMAnalyzer(IAnalysisProvider):
         """
         try:
             if not session_id:
-                from datetime import datetime
+                from ...shared.timezone import now as _tz_now
 
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                timestamp = _tz_now().strftime("%Y%m%d_%H%M%S")
                 if umo:
                     # Sanitize umo for filename (replace : with _)
                     safe_umo = umo.replace(":", "_")
@@ -100,9 +100,9 @@ class LLMAnalyzer(IAnalysisProvider):
         """
         try:
             if not session_id:
-                from datetime import datetime
+                from ...shared.timezone import now as _tz_now
 
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                timestamp = _tz_now().strftime("%Y%m%d_%H%M%S")
                 if umo:
                     safe_umo = umo.replace(":", "_")
                     session_id = f"{timestamp}_{safe_umo}"
@@ -141,9 +141,9 @@ class LLMAnalyzer(IAnalysisProvider):
             (话题列表, 金句列表, 总Token使用统计)
         """
         try:
-            from datetime import datetime
+            from ...shared.timezone import now as _tz_now
 
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            timestamp = _tz_now().strftime("%Y%m%d_%H%M%S")
             if umo:
                 safe_umo = umo.replace(":", "_")
                 session_id = f"{timestamp}_{safe_umo}"
@@ -245,9 +245,9 @@ class LLMAnalyzer(IAnalysisProvider):
             (话题列表, 金句列表, 总Token使用统计)
         """
         try:
-            from datetime import datetime
+            from ...shared.timezone import now as _tz_now
 
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            timestamp = _tz_now().strftime("%Y%m%d_%H%M%S")
             if umo:
                 safe_umo = umo.replace(":", "_")
                 session_id = f"incr_{timestamp}_{safe_umo}"

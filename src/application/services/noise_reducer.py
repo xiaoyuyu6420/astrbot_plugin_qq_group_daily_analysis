@@ -13,9 +13,9 @@ import asyncio
 import hashlib
 import re
 import time
-from datetime import datetime
 
 from ...infrastructure.config.config_manager import ConfigManager
+from ...shared.timezone import now as _tz_now
 from ...utils.logger import logger
 
 
@@ -303,7 +303,7 @@ class NoiseReducer:
             lines.append(f"   📝 {content_display}")
 
         lines.append(f"\n━━━━━━━━━━━━━")
-        lines.append(f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        lines.append(f"⏰ {_tz_now().strftime('%Y-%m-%d %H:%M:%S')}")
         return "\n".join(lines)
 
     def get_pending_count(self) -> int:

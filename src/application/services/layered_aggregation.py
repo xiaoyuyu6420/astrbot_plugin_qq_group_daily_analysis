@@ -17,7 +17,6 @@ import re
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime
 from typing import Any, Iterable
 
 from ...domain.entities.intel_item import IntelItem
@@ -36,6 +35,7 @@ from ...domain.services.intel_taxonomy import (
     normalize_channel,
     priority_rank,
 )
+from ...shared.timezone import now as _tz_now
 from ...utils.logger import logger
 
 
@@ -375,7 +375,7 @@ class ChannelPacker:
             by_channel[item.channel].append(item)
 
         messages: list[str] = []
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        now = _tz_now().strftime("%Y-%m-%d %H:%M:%S")
         for channel in ALL_CHANNELS:
             items = by_channel.get(channel)
             if not items:
@@ -406,7 +406,7 @@ class ChannelPacker:
         return messages
 
     def _pack_merged(self, result: AggregationResult) -> str:
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        now = _tz_now().strftime("%Y-%m-%d %H:%M:%S")
         by_channel: dict[str, list[IntelItem]] = defaultdict(list)
         for item in result.items:
             by_channel[item.channel].append(item)

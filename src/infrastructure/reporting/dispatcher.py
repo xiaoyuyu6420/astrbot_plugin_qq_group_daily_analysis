@@ -2,10 +2,10 @@ import base64
 import os
 import tempfile
 from collections.abc import Callable
-from datetime import datetime
 from typing import Any
 
 from ...shared.constants import PLUGIN_NAME
+from ...shared.timezone import now as _tz_now
 from ...shared.trace_context import TraceContext
 from ...utils.logger import logger
 from ..utils.admin_resolver import resolve_admin_qqs
@@ -429,7 +429,7 @@ class ReportDispatcher:
             if not image_data:
                 return None
 
-            date_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+            date_str = _tz_now().strftime("%Y%m%d_%H%M%S")
             path = os.path.join(
                 tempfile.gettempdir(), f"群聊分析报告_{group_id}_{date_str}.png"
             )

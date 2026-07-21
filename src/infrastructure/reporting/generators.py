@@ -23,6 +23,7 @@ from diskcache import Cache
 from markupsafe import Markup
 
 from ...domain.repositories.report_repository import IReportGenerator
+from ...shared.timezone import now as _tz_now
 from ...utils.logger import logger
 from ..utils.template_utils import render_template
 from ..visualization.activity_charts import ActivityVisualizer
@@ -417,7 +418,7 @@ class ReportGenerator(IReportGenerator):
             await asyncio.to_thread(output_dir.mkdir, parents=True, exist_ok=True)
 
             # 生成文件路径
-            current_date = datetime.now().strftime("%Y%m%d")
+            current_date = _tz_now().strftime("%Y%m%d")
             base_html_path = self._build_safe_report_path(
                 output_dir,
                 self.config_manager.get_html_filename_format(),
@@ -501,7 +502,7 @@ class ReportGenerator(IReportGenerator):
             json_data = {
                 "analysis_result": analysis_result,
                 "group_id": group_id,
-                "generated_at": datetime.now().isoformat(),
+                "generated_at": _tz_now().isoformat(),
             }
             await asyncio.to_thread(
                 json_path.write_text,
@@ -551,7 +552,7 @@ class ReportGenerator(IReportGenerator):
 
         report = f"""
 📋 群聊情报日报
-📅 {datetime.now().strftime("%Y年%m月%d日")}
+📅 {_tz_now().strftime("%Y年%m月%d日")}
 
 📊 基础统计
 • 消息总数: {stats.message_count}
@@ -701,8 +702,8 @@ class ReportGenerator(IReportGenerator):
             "t2i_google_fonts_mirror": self.config_manager.get_t2i_google_fonts_mirror(),
             "t2i_gstatic_mirror": self.config_manager.get_t2i_gstatic_mirror(),
             "t2i_atri_font_mirror": self.config_manager.get_t2i_atri_font_mirror(),
-            "current_date": datetime.now().strftime("%Y年%m月%d日"),
-            "current_datetime": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "current_date": _tz_now().strftime("%Y年%m月%d日"),
+            "current_datetime": _tz_now().strftime("%Y-%m-%d %H:%M:%S"),
             "message_count": stats.message_count,
             "participant_count": stats.participant_count,
             "total_characters": stats.total_characters,

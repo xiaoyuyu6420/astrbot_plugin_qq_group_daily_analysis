@@ -32,7 +32,6 @@ import asyncio
 import json
 import re
 import time
-from datetime import datetime
 
 from astrbot.api.event import AstrMessageEvent
 from astrbot.api.star import Context
@@ -44,6 +43,7 @@ from ...infrastructure.analysis.utils.llm_utils import (
 from ...infrastructure.config.config_manager import ConfigManager
 from ...infrastructure.platform.bot_manager import BotManager
 from ...infrastructure.utils.admin_resolver import resolve_admin_qqs
+from ...shared.timezone import now as _tz_now
 from ...utils.logger import logger
 from .noise_reducer import NoiseReducer
 
@@ -383,7 +383,7 @@ class MessageMonitorService:
             f"📝 原文：\n{content_display}\n"
             f"\n"
             f"━━━━━━━━━━━━━\n"
-            f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            f"⏰ {_tz_now().strftime('%Y-%m-%d %H:%M:%S')}"
         )
 
         await self._send_alert(
@@ -468,7 +468,7 @@ class MessageMonitorService:
             f"🎯 {'; '.join(desc for _, desc in hits[:3])}\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n"
             f"📝 {text[:500]}{'…' if len(text) > 500 else ''}\n"
-            f"⏰ {datetime.now().strftime('%H:%M:%S')}"
+            f"⏰ {_tz_now().strftime('%H:%M:%S')}"
         )
         await self._send_alert(
             alert,
@@ -900,7 +900,7 @@ class MessageMonitorService:
             alert += f"\n💡 概括：{summary}\n"
         alert += (
             f"\n━━━━━━━━━━━━━\n"
-            f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            f"⏰ {_tz_now().strftime('%Y-%m-%d %H:%M:%S')}"
         )
 
         targets = self._get_alert_targets()
@@ -1326,7 +1326,7 @@ class MessageMonitorService:
             alert += f"\n💡 跨群概述：{overall_summary}\n"
         alert += (
             f"\n━━━━━━━━━━━━━━━━━━━━━\n"
-            f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            f"⏰ {_tz_now().strftime('%Y-%m-%d %H:%M:%S')}"
         )
 
         await self._send_alert(

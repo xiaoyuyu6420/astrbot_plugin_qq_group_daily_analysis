@@ -151,6 +151,16 @@ class GroupDailyAnalysis(Star):
         # 同步全局限流并进行初始化配置
         GlobalRateLimiter.get_instance(self.config_manager.get_llm_max_concurrent())
 
+        # 应用初始时区配置（业务模块统一走 shared.timezone.now()）
+        # 非法时区会在 configure_timezone 内部回退到 Asia/Shanghai
+        from .src.shared.timezone import configure_timezone
+
+        configure_timezone(self.config_manager.get_timezone())
+
+        # 热更新回调：让 ConfigManager.reload_config 触发"重排调度 + 重配限流器"
+        # 这里保存为实例方法，避免 main.py 和 ConfigManager 形成循环依赖。
+        self._on_config_applied = self._build_config_applied_callback()
+
         self._initialized = False
         self._terminating = False  # 生命周期标志
         self._init_lock = asyncio.Lock()
@@ -231,6 +241,30 @@ class GroupDailyAnalysis(Star):
 
             except Exception as e:
                 logger.error(f"插件初始化失败: {e}", exc_info=True)
+
+    def _build_config_applied_callback(self):
+        """构造热更新回调闭包，注入到 ConfigManager.reload_config。
+
+        由 /分析设置 reload 或未来的框架钩子触发。回调里集中处理
+        "一次性消费配置" 的组件：限流器、调度器。
+        """
+
+        def _on_applied():
+            # 1. 重新应用 LLM 并发上限
+            try:
+                GlobalRateLimiter.get_instance(
+                    self.config_manager.get_llm_max_concurrent()
+                )
+            except Exception as e:
+                logger.warning(f"热更新限流器失败: {e}")
+            # 2. 重排定时任务（auto_analysis 时间 / 名单变更时必需）
+            try:
+                if self.auto_scheduler and self._initialized:
+                    self.auto_scheduler.schedule_jobs(self.context)
+            except Exception as e:
+                logger.warning(f"热更新调度器失败: {e}")
+
+        return _on_applied
 
     async def terminate(self):
         """插件被卸载/停用时调用，清理资源"""
@@ -354,7 +388,7 @@ class GroupDailyAnalysis(Star):
         import base64
         import re
         import tempfile
-        from datetime import datetime
+        from .src.shared.timezone import now as _tz_now
 
         enable_file = self.config_manager.get_enable_group_file_upload()
         enable_album = self.config_manager.get_enable_group_album_upload()
@@ -366,7 +400,7 @@ class GroupDailyAnalysis(Star):
             return
 
         # 1. 构造一个更友好的文件名
-        now = datetime.now()
+        now = _tz_now()
         timestamp = now.strftime("%H%M")
         date_str = now.strftime("%Y-%m-%d")
 
@@ -900,8 +934,10 @@ class GroupDailyAnalysis(Star):
                 yield result
 
         elif action == "reload":
-            self.auto_scheduler.schedule_jobs(self.context)
-            yield event.plain_result("✅ 已重新加载配置并重启定时任务")
+            # 通过 ConfigManager.reload_config 统一入口：
+            # 刷时区缓存 + 调回调（重排调度 + 重配限流器）
+            self.config_manager.reload_config(self._on_config_applied)
+            yield event.plain_result("✅ 已重新加载配置（时区/限流器/定时任务）")
 
         elif action == "test":
             check_target = getattr(event, "unified_msg_origin", None)
@@ -1007,10 +1043,10 @@ class GroupDailyAnalysis(Star):
         )
 
         if not batches:
-            from datetime import datetime
+            from .src.shared.timezone import from_timestamp as _tz_from_ts
 
-            start_str = datetime.fromtimestamp(window_start).strftime("%m-%d %H:%M")
-            end_str = datetime.fromtimestamp(window_end).strftime("%m-%d %H:%M")
+            start_str = _tz_from_ts(window_start).strftime("%m-%d %H:%M")
+            end_str = _tz_from_ts(window_end).strftime("%m-%d %H:%M")
             yield event.plain_result(
                 f"📊 滑动窗口 ({start_str} ~ {end_str}) 内尚无增量分析数据"
             )

@@ -24,6 +24,7 @@ from ....domain.value_objects.unified_message import (
     MessageContentType,
     UnifiedMessage,
 )
+from ....shared.timezone import now as _tz_now
 from ....utils.logger import logger
 from ..base import PlatformAdapter
 
@@ -599,7 +600,7 @@ class TelegramAdapter(PlatformAdapter):
             ):
                 logger.warning("[Telegram] 图片尺寸超限，正在尝试以文件形式发送...")
                 # 构造一个更有意义的文件名
-                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                ts = _tz_now().strftime("%Y%m%d_%H%M%S")
                 fn = f"analysis_report_{group_id}_{ts}.png"
                 return await self.send_file(group_id, image_path, filename=fn)
 

@@ -14,11 +14,11 @@ import asyncio
 import hashlib
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
 from typing import Any
 
 from ...domain.entities.push_category import PushCategory
 from ...domain.services.message_cleaner_service import MessageCleanerService
+from ...shared.timezone import now as _tz_now
 from ...shared.trace_context import TraceContext
 from ...utils.logger import logger
 from ...infrastructure.utils.admin_resolver import resolve_admin_qqs
@@ -311,7 +311,7 @@ class ScheduledCategoryDigestService:
         date_str: str | None = None,
     ) -> list[str]:
         """打包成待推送文本列表。"""
-        date_str = date_str or datetime.now().strftime("%Y-%m-%d")
+        date_str = date_str or _tz_now().strftime("%Y-%m-%d")
         mode = (push_mode or "split").strip().lower()
         if mode not in ("split", "merged"):
             mode = "split"
