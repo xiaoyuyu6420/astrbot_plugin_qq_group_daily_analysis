@@ -279,6 +279,12 @@
                 "description": "时区",
                 "default": "Asia/Shanghai",
                 "hint": "影响定时任务触发时间、日报日期戳、消息时间窗口判断。留空或填错会回退到 Asia/Shanghai。常见值：Asia/Shanghai / Asia/Tokyo / UTC / America/New_York。改完执行 /分析设置 reload 生效。"
+            },
+            "retention_days": {
+                "type": "int",
+                "description": "数据保留天数",
+                "default": 30,
+                "hint": "出于隐私与存储考虑，超过这个天数的群聊日报摘要（KV）、debug 模式下 dump 的原文 JSON 会被自动清理。0 = 不自动清理（不推荐，长期运行会无限增长）。每次日报生成后或插件启动时触发一次清理。"
             }
         }
     },

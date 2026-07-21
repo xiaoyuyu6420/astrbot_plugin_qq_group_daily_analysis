@@ -919,6 +919,19 @@ class ConfigManager:
         """
         return self._get_group("basic").get("timezone", "") or ""
 
+    def get_retention_days(self) -> int:
+        """获取数据保留天数（影响日报摘要 KV + debug dump 文件的过期清理）。
+
+        - 默认 30 天
+        - 0 表示不自动清理（不推荐：长期运行会无限增长）
+        - 负数按 0 处理
+        """
+        try:
+            val = int(self._get_group("basic").get("retention_days", 30))
+        except (TypeError, ValueError):
+            return 30
+        return max(0, val)
+
     def reload_config(self, on_applied=None):
         """热更新入口。
 

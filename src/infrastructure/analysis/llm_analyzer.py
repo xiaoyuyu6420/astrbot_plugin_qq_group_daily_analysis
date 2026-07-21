@@ -335,12 +335,18 @@ class LLMAnalyzer(IAnalysisProvider):
         """
         保存调试消息数据到文件（Debug Mode 专用）
 
+        隐私提示：本方法会把**群聊原文**（含昵称、用户 ID、消息内容）
+        dump 到磁盘。务必保持 debug_mode 默认关闭，并在不需要时及时
+        清理（参见 cleanup_debug_data）。
+
         Args:
             messages: 群聊消息列表
             session_id: 会话ID
         """
         try:
             import json
+            import os
+            import tempfile
 
             from astrbot.api.star import StarTools
 
@@ -348,10 +354,71 @@ class LLMAnalyzer(IAnalysisProvider):
             debug_dir.mkdir(parents=True, exist_ok=True)
 
             msg_file_path = debug_dir / f"{session_id}_messages.json"
-            with open(msg_file_path, "w", encoding="utf-8") as f:
-                json.dump(messages, f, ensure_ascii=False, indent=2)
+            # 原子写：避免半截 JSON 污染下次读取
+            tmp = tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                prefix=f".{session_id}_",
+                suffix=".tmp",
+                dir=str(debug_dir),
+                delete=False,
+            )
+            try:
+                with tmp:
+                    json.dump(messages, tmp, ensure_ascii=False, indent=2)
+                    tmp.flush()
+                    os.fsync(tmp.fileno())
+                os.replace(tmp.name, str(msg_file_path))
+            except Exception:
+                try:
+                    os.unlink(tmp.name)
+                except OSError:
+                    pass
+                raise
+
+            # 顺手清理过期 debug 文件，避免长期堆积
+            # 默认保留 7 天（debug 数据本就是临时排查用，不需要跟 retention_days 一样长）
+            self.cleanup_debug_data(max_age_days=7)
         except Exception:
             pass
+
+    def cleanup_debug_data(self, max_age_days: int = 7) -> int:
+        """清理 debug_data 目录下超过 max_age_days 天的 dump 文件。
+
+        在两个时机被调用：
+        1. 每次 _save_debug_messages 写完后（顺带清旧的）
+        2. 插件启动时（main.py._run_initialization），清掉上次运行遗留
+
+        Returns:
+            实际删除的文件数。
+        """
+        try:
+            import time as _time
+
+            from astrbot.api.star import StarTools
+
+            debug_dir = StarTools.get_data_dir(PLUGIN_NAME) / "debug_data"
+            if not debug_dir.exists():
+                return 0
+
+            cutoff = _time.time() - max_age_days * 86400
+            deleted = 0
+            for entry in debug_dir.iterdir():
+                # 只清 .json 文件，避免误删用户其他东西
+                if not entry.is_file() or entry.suffix != ".json":
+                    continue
+                try:
+                    if entry.stat().st_mtime < cutoff:
+                        entry.unlink()
+                        deleted += 1
+                except OSError as e:
+                    logger.warning(f"清理 debug 文件 {entry.name} 失败: {e}")
+            if deleted:
+                logger.info(f"已清理 {deleted} 个超过 {max_age_days} 天的 debug dump 文件")
+            return deleted
+        except Exception as e:
+            logger.warning(f"cleanup_debug_data 失败: {e}")
+            return 0
 
     # 向后兼容的方法，保持原有调用方式
     async def _call_provider_with_retry(

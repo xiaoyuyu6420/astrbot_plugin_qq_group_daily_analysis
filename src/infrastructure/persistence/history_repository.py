@@ -6,12 +6,13 @@
 """
 
 import json
+import os
+import tempfile
 from pathlib import Path
+from typing import Any
 
 from ...shared.timezone import now as _tz_now
 from ...shared.timezone import today_str as _tz_today_str
-from typing import Any
-
 from ...utils.logger import logger
 
 
@@ -46,6 +47,47 @@ class HistoryRepository:
         """内部方法：获取特定群组的历史 JSON 文件路径。"""
         return self.history_dir / f"group_{group_id}.json"
 
+    def _atomic_write_json(self, path: Path, data: Any) -> None:
+        """原子写入 JSON：先写到同目录临时文件，fsync 后 os.replace 覆盖目标。
+
+        背景：原本直接 ``open(path, 'w')`` 写入，如果进程在写到一半时被
+        终止（AstrBot 重载、SIGKILL、断电），文件会留下半截 JSON，下次
+        load 时 ``json.load`` 抛异常，该群历史就废了。原子写保证：
+        要么完整的旧文件、要么完整的新文件，绝不出现中间态。
+
+        实现要点：
+        - 临时文件用 ``tempfile.NamedTemporaryFile`` 创建在**同目录**下
+          （跨分区 ``os.replace`` 会退化成复制+删除，失去原子性）
+        - ``fsync`` 在 close 前调用，保证数据落盘
+        - ``os.replace`` 在 POSIX 上是原子的；Windows 上同盘也是原子
+        - 任何异常都会清理临时文件，不留垃圾
+        """
+        self.history_dir.mkdir(parents=True, exist_ok=True)
+        # delete=False 因为我们自己控制 close + rename
+        # mode="w" + encoding 必须显式：NamedTemporaryFile 默认 "w+b" 二进制，
+        # json.dump 写不进去
+        tmp = tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            prefix=f".{path.stem}_",
+            suffix=".tmp",
+            dir=str(self.history_dir),
+            delete=False,
+        )
+        try:
+            with tmp:
+                json.dump(data, tmp, ensure_ascii=False, indent=2)
+                tmp.flush()
+                os.fsync(tmp.fileno())
+            os.replace(tmp.name, str(path))
+        except Exception:
+            # 出错时清理临时文件
+            try:
+                os.unlink(tmp.name)
+            except OSError:
+                pass
+            raise
+
     def save_analysis_result(
         self,
         group_id: str,
@@ -78,10 +120,11 @@ class HistoryRepository:
             history["daily"][date_str] = result
             history["last_updated"] = _tz_now().isoformat()
 
-            # 原子写入（覆盖）
+            # 原子写入：临时文件 + fsync + os.replace
+            # （直接 open(w) 覆盖写到一半进程崩了会留下半截 JSON，
+            # 下次 load 时 json.load 抛异常，这个群的历史就废了）
             history_path = self._get_group_history_path(group_id)
-            with open(history_path, "w", encoding="utf-8") as f:
-                json.dump(history, f, ensure_ascii=False, indent=2)
+            self._atomic_write_json(history_path, history)
 
             logger.debug(f"已保存群 {group_id} 在 {date_str} 的历史分析记录")
             return True
@@ -186,8 +229,7 @@ class HistoryRepository:
             if dates_to_delete:
                 history["daily"] = daily
                 history_path = self._get_group_history_path(group_id)
-                with open(history_path, "w", encoding="utf-8") as f:
-                    json.dump(history, f, ensure_ascii=False, indent=2)
+                self._atomic_write_json(history_path, history)
 
             return len(dates_to_delete)
 

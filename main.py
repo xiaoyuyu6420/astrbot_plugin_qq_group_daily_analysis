@@ -235,6 +235,14 @@ class GroupDailyAnalysis(Star):
                 if self.auto_scheduler:
                     self.auto_scheduler.schedule_jobs(self.context)
 
+                # 4. 启动时清理一次过期数据（隐私合规：避免长期堆积）
+                #    - debug dump 文件（_save_debug_messages 写的群聊原文）
+                #    - 历史摘要 KV（按配置中的群列表逐群清）
+                try:
+                    self._run_startup_cleanup()
+                except Exception as e:
+                    logger.warning(f"启动清理失败（不影响主流程）: {e}")
+
                 self._initialized = True
                 self._discovery_run = True
                 logger.info(f"插件任务注册完成 (来源: {source})")
@@ -265,6 +273,54 @@ class GroupDailyAnalysis(Star):
                 logger.warning(f"热更新调度器失败: {e}")
 
         return _on_applied
+
+    def _run_startup_cleanup(self) -> None:
+        """启动时按 retention_days 清理过期数据（同步部分）。
+
+        分两步：
+        1. 同步：清 debug dump 文件（无 IO 依赖 KV，可直接做）
+        2. 异步：清历史摘要 KV —— 由调用方 schedule 任务执行
+                   （此处只发任务，避免阻塞初始化）
+        """
+        retention_days = self.config_manager.get_retention_days()
+
+        # 1. debug dump 文件清理（同步，无 KV 依赖）
+        try:
+            self.llm_analyzer.cleanup_debug_data(max_age_days=7)
+        except Exception as e:
+            logger.warning(f"清理 debug dump 失败: {e}")
+
+        # 2. 历史摘要 KV 清理（异步，按配置中的群列表）
+        if retention_days > 0:
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(
+                    self._cleanup_history_summaries_async(retention_days)
+                )
+            except RuntimeError:
+                # 无事件循环（不应发生在 Star 初始化阶段）—— 同步兜底
+                try:
+                    asyncio.run(self._cleanup_history_summaries_async(retention_days))
+                except Exception as e:
+                    logger.warning(f"同步执行历史清理失败: {e}")
+
+    async def _cleanup_history_summaries_async(self, retention_days: int) -> None:
+        """异步遍历配置中的群列表，按保留期清历史摘要。"""
+        try:
+            # 从配置中拿"已知群"列表作为清理范围
+            # （KV 不支持前缀 scan，只能清已知群）
+            group_ids = self.config_manager.get_group_list()
+            # 兜底：黑白名单模式下 group_list 可能不全，加上 extra_admin
+            # 已知的群无法列举，至少清名单里的
+            for gid in group_ids:
+                try:
+                    await self.history_manager.cleanup_old_summaries(
+                        gid, retention_days
+                    )
+                except Exception as e:
+                    logger.warning(f"清理群 {gid} 历史摘要失败: {e}")
+        except Exception as e:
+            logger.warning(f"历史摘要清理任务异常: {e}")
 
     async def terminate(self):
         """插件被卸载/停用时调用，清理资源"""
