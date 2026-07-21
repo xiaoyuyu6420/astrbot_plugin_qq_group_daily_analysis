@@ -63,7 +63,7 @@
                 "editor_language": "json",
                 "description": "【分类聚合】用户分类（名称 + 群列表）",
                 "default": "[]",
-                "hint": "JSON 数组。每个元素：{\"name\":\"分类名\",\"groups\":[\"群号\",...]}。\n示例：\n[\n  {\"name\": \"科技\", \"groups\": [\"123456\", \"234567\"]},\n  {\"name\": \"AI\", \"groups\": [\"345678\"]}\n]\n同一群可出现在多个分类。空数组 + by_category = 跳过本次定时并打错误日志。\n分类里的群仍需通过 basic 群权限白名单。"
+                "hint": "JSON 数组。每个元素：{\"name\":\"分类名\",\"groups\":[\"群号\",...]}。\n示例：\n[\n  {\"name\": \"科技\", \"groups\": [\"123456\", \"234567\"]},\n  {\"name\": \"AI\", \"groups\": [\"345678\"]}\n]\n同一群可出现在多个分类。空数组 + by_category = 跳过本次定时并打错误日志。\n分类里的群默认放行（无需在 basic 白名单重复填写）；仅当 basic 设为黑名单且群在黑名单内时才跳过（启动时会打 warning 提示冲突）。"
             },
             "scheduled_group_list_mode": {
                 "type": "string",
@@ -73,13 +73,13 @@
                     "blacklist"
                 ],
                 "default": "whitelist",
-                "hint": "仅 delivery_mode=per_group 使用。whitelist=只跑下面列表里的群；blacklist=除了下面列表，其他都跑。注意：这里只对“已通过基础群权限”的群生效。by_category 请用 categories，不看此名单。"
+                "hint": "仅 delivery_mode=per_group 使用。whitelist=只跑下面列表里的群；blacklist=除了下面列表，其他都跑。注意：这里只对“已通过基础群权限”的群生效。by_category 下完全忽略此项（配了也不生效），请只配 categories。"
             },
             "scheduled_group_list": {
                 "type": "list",
                 "description": "【定时】要出日报的群列表",
                 "default": [],
-                "hint": "仅 delivery_mode=per_group 使用。填 UMO 或群号。空白名单=不定时跑。by_category 请配置 categories，不要依赖此列表。",
+                "hint": "仅 delivery_mode=per_group 使用。填 UMO 或群号。空白名单=不定时跑。by_category 下完全忽略此项（配了也不生效），请只配 categories。",
                 "items": {
                     "type": "string"
                 }

@@ -390,8 +390,10 @@ _run_scheduled_report()
 **约束**：
 - by_category 不注册增量任务
 - categories 空 → 不注册定时 / 触发时打 error 日志并跳过
-- 分类内群仍过 `basic` 白名单；未通过则跳过
+- 分类内群默认放行（无需在 `basic` 白名单重复填写）；仅当 `basic` 设为黑名单且群在黑名单内时才跳过
+- categories 与 basic 黑名单冲突时，启动/热更新会打 warning 提示矛盾配置
 - 同一群可出现在多个分类
+- `scheduled_group_list*` 在 by_category 下完全忽略（仅 per_group 使用）
 - 输出首版为文本 digest（非完整图片日报合并）
 
 **新增/修改文件**：
@@ -434,7 +436,8 @@ _run_scheduled_report()
      - `delivery_mode` = `by_category`
      - `category_push_mode` = `split` 或 `merged`
      - `categories` = `[{"name":"科技","groups":["群A","群B"]},{"name":"AI","groups":["群C"]}]`
-5. **注意**：`basic` 白名单空 = 没有任何群可用；`per_group` 名单空或 `by_category` 无分类 = 不注册定时。
+     - 群多场景只需配 categories；basic 白名单对分类聚合链路不再构成阻碍（分类群默认放行，仅 basic 黑名单会生效）
+5. **注意**：`basic` 白名单空 = 手动 `/群分析` 等命令路径无群可用；`per_group` 名单空或 `by_category` 无分类 = 不注册定时。
 
 ### 启用实时消息监控（主动推送，次要）
 

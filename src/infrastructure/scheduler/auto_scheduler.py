@@ -170,11 +170,46 @@ class AutoScheduler:
 
         if delivery_mode == "by_category":
             logger.info("delivery_mode=by_category，跳过增量任务注册（仅分类摘要）。")
+            self._warn_category_blacklist_conflicts()
         elif self.config_manager.get_incremental_enabled():
             logger.info("增量分析功能已开启，正在注册全天增量提取任务...")
             self._schedule_incremental_cron_jobs(scheduler)
         else:
             logger.info("增量分析总开关未启用，仅执行传统定时全量分析。")
+
+    def _warn_category_blacklist_conflicts(self):
+        """by_category 下校验 categories 群与 basic 黑名单的冲突。
+
+        categories 里的群默认放行（不再要求 basic 白名单），但若 basic 是黑名单
+        模式且群在黑名单内，仍会按黑名单跳过。这种"既想分析又显式屏蔽"的矛盾配置
+        在此打 warning，让用户明确取舍。
+        """
+        mode = self.config_manager.get_group_list_mode().lower()
+        if mode != "blacklist":
+            return
+        blacklist = [str(g).strip() for g in self.config_manager.get_group_list()]
+        if not blacklist:
+            return
+        categories = self.config_manager.get_push_categories()
+        if not categories:
+            return
+
+        conflicts: list[str] = []
+        for cat in categories:
+            for gid in cat.groups:
+                gid_str = str(gid).strip()
+                if gid_str and any(
+                    self.config_manager._is_group_match(gid_str, item)
+                    for item in blacklist
+                ):
+                    if gid_str not in conflicts:
+                        conflicts.append(gid_str)
+        if conflicts:
+            logger.warning(
+                f"[配置警告] 以下群同时出现在 categories 和 basic 黑名单中，"
+                f"将按黑名单跳过：{conflicts}。"
+                f"建议从黑名单移除，或在 categories 中删除该群。"
+            )
 
     def _schedule_report_time_jobs(self, scheduler):
         """在配置的时间点注册报告生成任务。

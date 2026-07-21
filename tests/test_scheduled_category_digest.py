@@ -101,7 +101,11 @@ def test_value_item_fingerprint_dedup_key():
     assert a.ensure_fingerprint() == b.ensure_fingerprint()
 
 
-def test_whitelist_skips_disallowed_groups():
+def test_categories_groups_auto_admitted_in_whitelist_mode():
+    """by_category 下，categories 里的群即使不在 basic 白名单也应自动放行。
+
+    用户只在 categories 里填了群号，basic.group_list 留空/不全，定时聚合不应再静默跳过。
+    """
     cfg = ConfigManager(
         AstrBotConfig(
             {
@@ -168,7 +172,68 @@ def test_whitelist_skips_disallowed_groups():
             stagger=0,
         )
     )
+    # 新语义：111 和 222 都应被分析（222 虽不在 basic 白名单，但在 categories 里 → 放行）
+    assert digest.groups_analyzed == ["111", "222"]
+    assert digest.groups_skipped == []
+    assert len(digest.items) == 2
+
+
+def test_blacklist_still_skips_categories_group():
+    """by_category 下，basic 黑名单优先级最高：categories 里列了的群仍会被黑名单挡掉。
+
+    验证"显式屏蔽"语义不被 categories 放行逻辑覆盖。
+    """
+    cfg = ConfigManager(
+        AstrBotConfig(
+            {
+                "basic": {
+                    "group_list_mode": "blacklist",
+                    "group_list": ["222"],  # 222 被显式屏蔽
+                },
+                "auto_analysis": {
+                    "delivery_mode": "by_category",
+                    "categories": [
+                        {"name": "科技", "groups": ["111", "222"]},
+                    ],
+                },
+                "admin_notify": {"extra_admin_qq": ["10001"]},
+                "analysis_features": {
+                    "topic_analysis_enabled": False,
+                    "golden_quote_analysis_enabled": False,
+                },
+            }
+        )
+    )
+
+    analysis = MagicMock()
+    analysis.analysis_domain_service.analyze_user_activity = MagicMock(return_value={})
+    analysis.statistics_service._convert_to_legacy_dict = MagicMock(return_value=[])
+    analysis.llm_semaphore = asyncio.Semaphore(1)
+    analysis.llm_analyzer.analyze_all_concurrent = AsyncMock(
+        return_value=([], [], None)
+    )
+
+    bot = MagicMock()
+    bot.get_adapter = MagicMock(return_value=MagicMock(platform_id="onebot"))
+    bot.get_platform_ids = MagicMock(return_value=["onebot"])
+
+    svc = ScheduledCategoryDigestService(cfg, analysis, bot)
+    svc._extract_group_value = AsyncMock(
+        side_effect=lambda gid, platform_id=None: [
+            ValueItem(content=f"from {gid}", source_group_id=str(gid))
+        ]
+    )
+
+    digest = asyncio.run(
+        svc._build_category_digest(
+            PushCategory(name="科技", groups=["111", "222"]),
+            platform_id="onebot",
+            max_concurrent=2,
+            stagger=0,
+        )
+    )
+    # 111 放行；222 命中黑名单 → 跳过
     assert digest.groups_analyzed == ["111"]
-    assert "222" in digest.groups_skipped
+    assert digest.groups_skipped == ["222"]
     assert len(digest.items) == 1
     assert digest.items[0].source_group_id == "111"

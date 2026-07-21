@@ -130,7 +130,7 @@ class ScheduledCategoryDigestService:
             async with sem:
                 if not self._is_group_allowed(group_id, platform_id):
                     logger.info(
-                        f"分类 [{category.name}] 群 {group_id} 未过基础白名单，跳过"
+                        f"分类 [{category.name}] 群 {group_id} 命中 basic 黑名单，跳过"
                     )
                     digest.groups_skipped.append(group_id)
                     results[idx] = []
@@ -176,12 +176,25 @@ class ScheduledCategoryDigestService:
         return digest
 
     def _is_group_allowed(self, group_id: str, platform_id: str | None) -> bool:
+        """分类聚合链路的群准入判定。
+
+        by_category 时，用户已经在 categories 里显式列出该群，即视为已准入，
+        不再要求在 basic.group_list 白名单里重复填写（避免三份名单割裂）。
+        仅当 basic 设为黑名单模式且群在黑名单内时，才尊重黑名单（显式屏蔽优先级最高）。
+        """
         gid = str(group_id).strip()
-        if platform_id:
-            umo = f"{platform_id}:GroupMessage:{gid}"
-            if self.config_manager.is_group_allowed(umo):
-                return True
-        return self.config_manager.is_group_allowed(gid)
+        umo = f"{platform_id}:GroupMessage:{gid}" if platform_id else gid
+
+        mode = self.config_manager.get_group_list_mode().lower()
+        if mode == "blacklist":
+            # 黑名单优先级最高：显式屏蔽的群不放行（冲突由 schedule_jobs 打 warning）
+            glist = [str(g).strip() for g in self.config_manager.get_group_list()]
+            if glist and any(
+                self.config_manager._is_group_match(umo, item) for item in glist
+            ):
+                return False
+        # whitelist / none / 黑名单未命中：categories 显式列出即放行
+        return True
 
     async def _extract_group_value(
         self, group_id: str, platform_id: str | None
