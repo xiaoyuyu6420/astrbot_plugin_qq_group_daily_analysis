@@ -8,7 +8,9 @@ on:
   workflow_dispatch:
 
 jobs:
-  # ── 集成测试：验证业务逻辑（缓冲/flush/推送/降级） ──
+  # ── 集成 / 单元测试：纯 mock，不依赖真实 astrbot 框架 ──
+  # 关键：故意不安装 astrbot —— tests/conftest.py 检测到无真实框架时会自动注入 mock。
+  # 若装了 astrbot，conftest 不 mock，部分测试会因真实框架行为不一致而失败。
   integration-test:
     name: Integration Tests (mock)
     runs-on: ubuntu-latest
@@ -24,13 +26,18 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install astrbot
           pip install -r requirements.txt
           pip install pytest pytest-asyncio
 
       - name: Run integration tests
         run: |
-          python -m pytest tests/test_monitor_e2e.py tests/test_monitor_keyword_e2e.py -v --asyncio-mode=auto --tb=short
+          python -m pytest tests/ -v --asyncio-mode=auto --tb=short --ignore=tests/real_e2e
+
+      - name: Show test summary on failure
+        if: failure()
+        run: |
+          echo "::error::Integration tests failed. Re-run with long traceback:"
+          python -m pytest tests/ --asyncio-mode=auto --ignore=tests/real_e2e -v --tb=long 2>&1 | tail -80
 
   # ── 半真 e2e：真实 astrbot，验证 filter 注册 + 拦截匹配 ──
   real-e2e-test:
