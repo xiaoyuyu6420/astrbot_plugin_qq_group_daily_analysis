@@ -545,46 +545,94 @@ class ReportGenerator(IReportGenerator):
         encoded_relative_url = quote(relative_url, safe="/")
         return caption + f"\n{base_url.rstrip('/')}/{encoded_relative_url}"
 
-    def generate_text_report(self, analysis_result: dict) -> str:
-        """生成文本格式的分析报告（定制版：只保留统计/话题/信息差）"""
+    def generate_text_report(
+        self, analysis_result: dict, image_fallback: bool = False
+    ) -> str:
+        """生成结构化纯文本报告（QQ 友好，不用 Markdown 语法）。
+
+        定制版：只保留统计/话题/信息差。用分隔线 + 方括号编号 + 留白排版。
+
+        Args:
+            image_fallback: True 表示这是图片渲染失败后的降级文本，顶部会加醒目的
+                降级提示。False（默认）表示用户主动选的纯文本格式，不加提示。
+        """
         stats = analysis_result["statistics"]
         topics = analysis_result.get("topics") or []
 
-        report = f"""
-📋 群聊情报日报
-📅 {_tz_now().strftime("%Y年%m月%d日")}
+        sep = "━" * 20
+        date_str = _tz_now().strftime("%Y-%m-%d")
 
-📊 基础统计
-• 消息总数: {stats.message_count}
-• 参与人数: {stats.participant_count}
-• 总字符数: {stats.total_characters}
-• 表情数量: {stats.emoji_count}
-• 最活跃时段: {stats.most_active_period}
+        # 防御性字段访问：兼容 Topic 对象（.name）和历史 dict（topic key）
+        def _topic_name(t) -> str:
+            return getattr(t, "name", None) or (t.get("topic") if isinstance(t, dict) else "") or ""
 
-💬 有价值话题
-"""
+        def _topic_contributors(t):
+            return getattr(t, "contributors", None) or (t.get("contributors") if isinstance(t, dict) else []) or []
 
+        def _topic_detail(t) -> str:
+            return getattr(t, "detail", None) or (t.get("detail") if isinstance(t, dict) else "") or ""
+
+        lines: list[str] = []
+        if image_fallback:
+            lines += [
+                sep,
+                "⚠️ 图片渲染失败，以下为降级文本摘要（完整报告见日志/HTML）",
+                sep,
+                "",
+            ]
+        lines += [
+            f"群聊情报日报 · {date_str}",
+            "",
+            sep,
+            "【基础统计】",
+            sep,
+            "",
+            f"　消息总数　{stats.message_count}",
+            f"　参与人数　{stats.participant_count}",
+            f"　总字符数　{stats.total_characters}",
+            f"　表情数量　{stats.emoji_count}",
+            f"　最活跃时段　{stats.most_active_period}",
+            "",
+        ]
+
+        # 话题板块
         max_topics = self.config_manager.get_max_topics()
-        if topics:
-            for i, topic in enumerate(topics[:max_topics], 1):
-                contributors_str = "、".join(topic.contributors)
-                report += f"{i}. {topic.topic}\n"
-                report += f"   参与者: {contributors_str}\n"
-                report += f"   {topic.detail}\n\n"
+        topics_slice = list(topics[:max_topics])
+        lines += [sep, f"【有价值话题】共 {len(topics_slice)} 条", sep, ""]
+        if topics_slice:
+            for i, topic in enumerate(topics_slice, 1):
+                name = _topic_name(topic)
+                contributors_str = "、".join(_topic_contributors(topic))
+                lines.append(f"  【话题 {i}】{name}")
+                if contributors_str:
+                    lines.append(f"  　参与者：{contributors_str}")
+                detail = _topic_detail(topic).strip()
+                if detail:
+                    lines.append(f"  　{detail}")
+                lines.append("")
         else:
-            report += "（今日无明显有价值话题）\n\n"
+            lines += ["（今日无明显有价值话题）", ""]
 
-        report += "💎 信息差 / 商机 / 干货\n"
+        # 信息差 / 商机 / 干货板块
         max_golden_quotes = self.config_manager.get_max_golden_quotes()
         golden_quotes = getattr(stats, "golden_quotes", None) or []
-        if golden_quotes:
-            for i, golden_quote in enumerate(golden_quotes[:max_golden_quotes], 1):
-                report += f'{i}. "{golden_quote.content}" —— {golden_quote.sender}\n'
-                report += f"   {golden_quote.reason}\n\n"
+        quotes_slice = list(golden_quotes[:max_golden_quotes])
+        lines += [sep, f"【信息差 / 商机 / 干货】共 {len(quotes_slice)} 条", sep, ""]
+        if quotes_slice:
+            for i, gq in enumerate(quotes_slice, 1):
+                idx = f"{i:02d}"
+                lines.append(f"  【{idx}】“{gq.content}”")
+                if gq.sender:
+                    lines.append(f"  　—— {gq.sender}")
+                reason = (gq.reason or "").strip()
+                if reason:
+                    lines.append(f"  　价值：{reason}")
+                lines.append("")
         else:
-            report += "（今日未筛到可行动的高价值信息）\n\n"
+            lines += ["（今日未筛到可行动的高价值信息）", ""]
 
-        return report
+        lines.append(sep)
+        return "\n".join(lines)
 
     async def _prepare_render_data(
         self,

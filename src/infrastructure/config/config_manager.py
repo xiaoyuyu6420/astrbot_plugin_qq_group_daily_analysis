@@ -428,6 +428,14 @@ class ConfigManager:
         """获取多群分析任务启动时的交错间隔（秒）"""
         return self._get_group("performance").get("stagger_seconds", 2)
 
+    def get_image_retry_count(self) -> int:
+        """获取图片渲染整体重试次数（两轮策略全失败后的额外尝试次数）"""
+        return self._get_group("performance").get("image_retry_count", 1)
+
+    def get_image_retry_interval_seconds(self) -> int:
+        """获取图片渲染重试间隔（秒），给 T2I 服务恢复留缓冲"""
+        return self._get_group("performance").get("image_retry_interval_seconds", 15)
+
     def set_max_concurrent_tasks(self, count: int):
         """设置自动分析最大并发数"""
         self._ensure_group("performance")["max_concurrent_groups"] = count

@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import os
 import tempfile
@@ -68,6 +69,80 @@ class ReportDispatcher:
         else:
             logger.warning(f"[{trace_id}] 群 {group_id} 的报告分发失败")
 
+    def _make_avatar_url_getter(self, platform_id: str | None):
+        """构造头像获取回调（请求小尺寸头像以优化性能）。
+
+        抽出 _dispatch_image / _dispatch_to_admins 两处重复的闭包，供重试逻辑复用。
+        """
+
+        async def avatar_url_getter(user_id: str):
+            if not platform_id:
+                return None
+            adapter = self.message_sender.bot_manager.get_adapter(platform_id)
+            if adapter and hasattr(adapter, "get_user_avatar_url"):
+                return await adapter.get_user_avatar_url(user_id, size=40)
+            return None
+
+        return avatar_url_getter
+
+    async def _render_image_with_retry(
+        self,
+        analysis_result: dict[str, Any],
+        group_id: str,
+        platform_id: str | None,
+    ) -> tuple[str | None, str | None]:
+        """生成图片报告，失败时按配置进行整体重试。
+
+        generate_image_report 内部已有"两轮策略"降级（png→jpeg），
+        本方法在其全部失败后，等待 interval 秒再整体重跑，覆盖 T2I 端点
+        瞬时故障（网络闪断、Chromium 重启、内存瞬时高峰）。
+
+        顺序执行：第一次调用完全结束（含 finally 的 session 清理）后才重试，
+        无并发/状态冲突。
+        """
+        trace_id = TraceContext.get()
+        retry_count = max(0, self.config_manager.get_image_retry_count())
+        interval = max(0, self.config_manager.get_image_retry_interval_seconds())
+
+        avatar_url_getter = self._make_avatar_url_getter(platform_id)
+        image_url: str | None = None
+        html_content: str | None = None
+
+        total_attempts = retry_count + 1
+        for attempt in range(1, total_attempts + 1):
+            try:
+                image_url, html_content = (
+                    await self.report_generator.generate_image_report(
+                        analysis_result,
+                        group_id,
+                        self._html_render_func,
+                        avatar_url_getter=avatar_url_getter,
+                        avatar_cache_namespace=platform_id,
+                    )
+                )
+            except Exception as e:
+                logger.error(f"[{trace_id}] Failed to generate image report: {e}")
+                image_url = None
+
+            if image_url:
+                if attempt > 1:
+                    logger.info(
+                        f"[{trace_id}] 图片重试第 {attempt - 1} 次成功，群 {group_id}"
+                    )
+                return image_url, html_content
+
+            if attempt < total_attempts:
+                logger.warning(
+                    f"[{trace_id}] 图片渲染失败（第 {attempt}/{total_attempts} 次），"
+                    f"{interval}s 后重试，群 {group_id}"
+                )
+                await asyncio.sleep(interval)
+
+        logger.warning(
+            f"[{trace_id}] 图片渲染全部 {total_attempts} 次尝试均失败，群 {group_id}"
+        )
+        return None, html_content
+
     async def _dispatch_image(
         self, group_id: str, analysis_result: dict[str, Any], platform_id: str | None
     ) -> bool:
@@ -77,29 +152,10 @@ class ReportDispatcher:
             logger.warning(f"[{trace_id}] 未设置 HTML 渲染函数，回退到文本模式。")
             return await self._dispatch_text(group_id, analysis_result, platform_id)
 
-        # 2. 生成图片
-        image_url = None
-        html_content = None
-        try:
-            # 定义头像获取回调，请求小尺寸头像以优化性能
-            async def avatar_url_getter(user_id: str):
-                if not platform_id:
-                    return None
-                adapter = self.message_sender.bot_manager.get_adapter(platform_id)
-                if adapter and hasattr(adapter, "get_user_avatar_url"):
-                    return await adapter.get_user_avatar_url(user_id, size=40)
-                return None
-
-            image_url, html_content = await self.report_generator.generate_image_report(
-                analysis_result,
-                group_id,
-                self._html_render_func,
-                avatar_url_getter=avatar_url_getter,
-                avatar_cache_namespace=platform_id,
-            )
-        except Exception as e:
-            logger.error(f"[{trace_id}] Failed to generate image report: {e}")
-            # image_url and html_content remain None
+        # 2. 生成图片（含失败整体重试）
+        image_url, html_content = await self._render_image_with_retry(
+            analysis_result, group_id, platform_id
+        )
 
         # 4. 发送图片
         sent = False
@@ -116,11 +172,13 @@ class ReportDispatcher:
         if sent:
             return True
 
-        # 6. 最终回退：如果图片发送失败（包括生成失败或发送接口报错），直接尝试发送文本报告
+        # 6. 最终回退：图片生成/发送均失败，发送降级文本（带醒目提示）
         logger.warning(
             f"[{trace_id}] Image dispatch failed, falling back to text report."
         )
-        return await self._dispatch_text(group_id, analysis_result, platform_id)
+        return await self._dispatch_text(
+            group_id, analysis_result, platform_id, image_fallback=True
+        )
 
     async def _dispatch_html(
         self, group_id: str, analysis_result: dict[str, Any], platform_id: str | None
@@ -200,11 +258,21 @@ class ReportDispatcher:
         return await self._dispatch_text(group_id, analysis_result, platform_id)
 
     async def _dispatch_text(
-        self, group_id: str, analysis_result: dict[str, Any], platform_id: str | None
+        self,
+        group_id: str,
+        analysis_result: dict[str, Any],
+        platform_id: str | None,
+        image_fallback: bool = False,
     ) -> bool:
-        """分发文本报告"""
+        """分发文本报告。
+
+        Args:
+            image_fallback: True 表示这是图片失败后的降级，文本顶部会加醒目提示。
+        """
         logger.info(f"[分发器] 正在向群组 {group_id} 分发文本报告")
-        text_report = self.report_generator.generate_text_report(analysis_result)
+        text_report = self.report_generator.generate_text_report(
+            analysis_result, image_fallback=image_fallback
+        )
         adapter = self.message_sender.bot_manager.get_adapter(platform_id)
         # 尝试通过适配器发送文本报告
         logger.info(f"[分发器] 正在尝试通过适配器发送文本报告。群: {group_id}")
@@ -212,7 +280,7 @@ class ReportDispatcher:
             if adapter and await adapter.send_text_report(group_id, text_report):
                 return True
             return await self.message_sender.send_text(
-                group_id, f"📊 每日群聊分析报告：\n\n{text_report}", platform_id
+                group_id, text_report, platform_id
             )
         except Exception as e:
             logger.error(f"[分发器] 发送文本报告最终失败。群: {group_id}, 错误: {e}")
@@ -254,35 +322,25 @@ class ReportDispatcher:
 
         logger.info(f"[{trace_id}] 管理员私聊通知目标: {admin_qqs}")
 
-        # 1. 生成图片报告（复用 _dispatch_image 的生成逻辑，但不发群）
+        # 1. 生成图片报告（含失败整体重试；复用 _dispatch_image 的生成逻辑，但不发群）
         image_url: str | None = None
         if self._html_render_func:
-            try:
-                async def avatar_url_getter(user_id: str):
-                    if not platform_id:
-                        return None
-                    a = self.message_sender.bot_manager.get_adapter(platform_id)
-                    if a and hasattr(a, "get_user_avatar_url"):
-                        return await a.get_user_avatar_url(user_id, size=40)
-                    return None
+            image_url, _ = await self._render_image_with_retry(
+                analysis_result, group_id, platform_id
+            )
 
-                image_url, _ = await self.report_generator.generate_image_report(
-                    analysis_result,
-                    group_id,
-                    self._html_render_func,
-                    avatar_url_getter=avatar_url_getter,
-                    avatar_cache_namespace=platform_id,
-                )
-            except Exception as e:
-                logger.error(f"[{trace_id}] 生成图片报告失败: {e}")
-                image_url = None
-
-        # 2. 准备文本兜底
-        text_report = self.report_generator.generate_text_report(analysis_result)
+        # 2. 准备文本兜底（私聊场景下，发文本即代表图片失败，带降级提示）
+        text_report = self.report_generator.generate_text_report(
+            analysis_result, image_fallback=not image_url
+        )
 
         # 3. 逐个私聊发送（图片优先；图片失败则回退文本，保证情报及时送达）
         caption = TraceContext.make_report_caption()
-        text_payload = f"📋 群聊情报日报（群 {group_id}）：\n\n{text_report}"
+        # 仅在没有降级提示时补群号标识（降级文本已含完整标题）
+        if image_url:
+            text_payload = f"📋 群聊情报日报（群 {group_id}）：\n\n{text_report}"
+        else:
+            text_payload = f"（群 {group_id}）\n{text_report}"
         success_count = 0
         for qq in admin_qqs:
             try:
