@@ -3,9 +3,9 @@
 负责用户维度的活跃度分析、发言习惯及活动模式识别。
 """
 
-from datetime import datetime
 from typing import TypedDict
 
+from ...shared.timezone import from_timestamp
 from ..value_objects.unified_message import MessageContentType, UnifiedMessage
 
 
@@ -57,7 +57,7 @@ class AnalysisDomainService:
             stats["nickname"] = msg.sender_card or msg.sender_name
 
             # 统计时间分布
-            msg_time = datetime.fromtimestamp(msg.timestamp)
+            msg_time = from_timestamp(msg.timestamp)
             hour = msg_time.hour
             stats["hours"][hour] = stats["hours"].get(hour, 0) + 1
 

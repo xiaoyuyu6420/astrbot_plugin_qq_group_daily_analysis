@@ -193,16 +193,20 @@ class TestDedup:
         assert nr.check_dedup("消息 A") is True
 
     def test_dedup_expiry(self):
-        """去重窗口过期后不再去重"""
-        nr = NoiseReducer(make_config(dedup_minutes=0))  # 先 0 方便设置
-        # 手动设短窗口
-        nr._fingerprints["test"] = time.monotonic() - 1  # 1 秒前
-        # 用 dedup_minutes=1 重新检查
-        nr2 = NoiseReducer(make_config(dedup_minutes=1))
-        nr2._fingerprints = nr._fingerprints
-        # 已过期
-        # 实际需要 sleep，这里简化测试：指纹已不在窗口内
-        assert True  # 结构正确即可
+        """去重窗口过期后不再去重（同一内容可再次推送）"""
+        # dedup_minutes=1 → 窗口 60 秒
+        nr = NoiseReducer(make_config(dedup_minutes=1))
+        text = "某条 API key sk-test123"
+        fp = NoiseReducer._fingerprint(text)
+
+        # 先标记为「已推送过」，但时间戳设在 120 秒前（已超出 60 秒窗口）
+        nr._fingerprints[fp] = time.monotonic() - 120
+
+        # 窗口已过期 → check_dedup 不应判重，应返回 False（可再次推送）
+        assert nr.check_dedup(text) is False
+        # 对比：窗口内的指纹应判重
+        nr._fingerprints[fp] = time.monotonic()  # 刚刚标记
+        assert nr.check_dedup(text) is True
 
 
 # ============================================================

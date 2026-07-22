@@ -130,7 +130,7 @@ def test_categories_groups_auto_admitted_in_whitelist_mode():
 
     analysis = MagicMock()
     analysis.analysis_domain_service.analyze_user_activity = MagicMock(return_value={})
-    analysis.statistics_service._convert_to_legacy_dict = MagicMock(return_value=[])
+    analysis.statistics_service.convert_to_legacy_dict = MagicMock(return_value=[])
     analysis.llm_semaphore = asyncio.Semaphore(1)
     analysis.llm_analyzer.analyze_all_concurrent = AsyncMock(
         return_value=([], [], None)
@@ -207,7 +207,7 @@ def test_blacklist_still_skips_categories_group():
 
     analysis = MagicMock()
     analysis.analysis_domain_service.analyze_user_activity = MagicMock(return_value={})
-    analysis.statistics_service._convert_to_legacy_dict = MagicMock(return_value=[])
+    analysis.statistics_service.convert_to_legacy_dict = MagicMock(return_value=[])
     analysis.llm_semaphore = asyncio.Semaphore(1)
     analysis.llm_analyzer.analyze_all_concurrent = AsyncMock(
         return_value=([], [], None)

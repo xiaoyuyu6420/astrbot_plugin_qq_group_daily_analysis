@@ -9,6 +9,8 @@ from datetime import datetime
 from enum import Enum
 from typing import Any
 
+from ...shared.timezone import from_timestamp
+
 
 class MessageContentType(Enum):
     """
@@ -160,7 +162,7 @@ class UnifiedMessage:
         Returns:
             datetime: 本地化后的时间对象
         """
-        return datetime.fromtimestamp(self.timestamp)
+        return from_timestamp(self.timestamp)
 
     def to_analysis_format(self) -> str:
         """

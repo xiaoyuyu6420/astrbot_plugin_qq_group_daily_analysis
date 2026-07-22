@@ -1,24 +1,26 @@
 """
 统一时区工具
 
-整个插件应当只用这里的 `now()` / `now_dt()`，避免散落的 `datetime.now()`
-（裸调用会受运行环境 TZ 影响 —— AstrBot 跑在 Docker 默认 UTC 时会把
-"每天 09:00 推送" 变成 UTC 09:00）。
+整个插件应当只用这里的 `now()` / `from_timestamp()`，避免散落的
+`datetime.now()` / `datetime.fromtimestamp()`（裸调用会受运行环境 TZ 影响 ——
+AstrBot 跑在 Docker 默认 UTC 时会把 "每天 09:00 推送" 变成 UTC 09:00，
+也会让按小时分桶的统计错位）。
 
 设计要点：
 - 时区来源由 ConfigManager 注入（用户在 _conf_schema.json 的 basic.timezone 配置）。
   这里只负责缓存与 fallback —— 缓存层不依赖 AstrBotConfig，避免循环导入。
 - 非法/无法识别的时区一律回退到 Asia/Shanghai（中国主战场）。
-- 公开两个 API：
-    * now()     —— tz-aware datetime，对外业务逻辑用
-    * now_iso() —— ISO8601 字符串，写日志/JSON 时用
+- 公开 API：
+    * now()          —— tz-aware datetime，对外业务逻辑用
+    * now_iso()      —— ISO8601 字符串，写日志/JSON 时用
+    * from_timestamp(ts) —— Unix 时间戳转 tz-aware datetime（消息分桶/展示）
 - 提供一个 today_str(fmt) 用于按本地日期生成 key（历史日报按日期分桶）。
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from zoneinfo import ZoneInfo
 
 from .constants import PLUGIN_NAME  # noqa: F401  保留给调用方复用
 
@@ -44,7 +46,7 @@ def configure_timezone(tz_name: str | None) -> str:
     name = (tz_name or "").strip() or DEFAULT_TZ_NAME
     try:
         new_tz = ZoneInfo(name)
-    except (ZoneInfoNotFoundError, ValueError, Exception):  # noqa: BLE001
+    except Exception:  # noqa: BLE001
         # 非法时区：不抛异常，回退到默认
         if name != DEFAULT_TZ_NAME:
             # 仅在真的失败时记录 —— 避免初始化阶段默认值也打日志

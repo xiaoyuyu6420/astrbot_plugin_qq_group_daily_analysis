@@ -48,6 +48,7 @@
 | 11 | **智能降噪层** | `noise_reducer.py`(新), `message_monitor_service.py`, `config_manager.py`, `_conf_schema.json` | +~300 行 |
 | 12 | **跨群智能聚合（实时内容频道）** | `message_monitor_service.py`, `config_manager.py`, `_conf_schema.json` | +~200 行 |
 | 13 | **定时用户分类聚合（by_category）** | `push_category.py`, `scheduled_category_digest_service.py`, `auto_scheduler.py`, `config_manager.py`, `_conf_schema.json` | 新增 |
+| 14 | **分层聚合体系（跨群聚合的核心实现，承接 12）** | `layered_aggregation.py`(新), `intel_item.py`(新), `intel_taxonomy.py`(新), `message_monitor_service.py`, `config_manager.py`, `_conf_schema.json` | +~900 行 |
 
 ---
 
@@ -301,12 +302,21 @@ AstrBot 对已安装插件会保留现有配置文件；schema 默认值只在**
 
 **关闭时（per_group）**：window 模式逐群独立推送（每群一份简报）。
 
-**开启时（cross_group）**：flush 合并所有监控群的消息 → LLM 按话题聚类 → 输出一份统一简报。
+**开启时（cross_group）**：flush 合并所有监控群的消息，按 `aggregation_mode` 分两种聚合路径（默认 `layered`，详见定制点 14）：
+- `layered`（默认，推荐）：每群本地规则提炼 candidates → 跨群指纹去重 → 按频道（channel）分类打包推送。50+ 群可用，不全量塞一次 LLM。
+- `legacy`：合并所有群原始消息送一次 LLM 聚类（4000 字硬截断，群多会丢），输出统一简报。保留为兼容与回滚路径。
 
-**架构**：
+> ⚠️ 注意：早期文档把 cross_group 等同于「一次 LLM 聚类」。实际代码里 cross_group 默认走 layered，LLM 聚类（`_flush_cross_group`）需显式设 `aggregation_mode=legacy` 才触发。
+
+**架构**（`_flush_all` 分流）：
 ```
 _flush_all() 检测 window_scope / enable_cross_group
-  cross_group → _flush_cross_group(batches)
+  cross_group → 按 aggregation_mode 分流
+    layered (默认) → _flush_layered(batches)
+           L1 每群本地规则提炼 candidates（可选 LLM）
+           → L2 跨群指纹去重 + 按 channel 聚合 + 预算截断
+           → ChannelPacker 按 channels_enabled 打成推送（详见定制点 14）
+    legacy        → _flush_cross_group(batches)
            合并所有群消息（标注来源群）
            → 过滤：至少一个目标 QQ 发言
            → 截断（max_context_messages）
@@ -402,6 +412,66 @@ _run_scheduled_report()
 - `src/infrastructure/scheduler/auto_scheduler.py`
 - `src/infrastructure/config/config_manager.py`
 - `_conf_schema.json` / docs / metadata / README
+
+### 定制点 14：分层聚合体系（跨群聚合的核心实现，承接定制点 12）
+
+**问题**：定制点 12 的 `legacy` 模式把所有群原始聊天拼成一份文本送 LLM 聚类，4 000 字硬截断——群一多，大部分消息被截掉，critical（如 API key 泄露）可能丢。真实需求是「50+ 群也能稳定筛出高价值情报，不全量塞一次 LLM」。
+
+**这是 `cross_group` 的默认路径**（`aggregation_mode=layered`）。定制点 12 描述的 LLM 聚类（`_flush_cross_group`）已被它取代为推荐路径，`legacy` 保留为回滚选项。
+
+**三段式数据流**：
+
+```
+L1（每群本地）GroupCandidateExtractor
+   内置正则规则（BUILTIN_PATTERNS）在每群原始消息里提炼 candidates
+   可选 l1_use_llm：单群小 LLM 调用合并近义/补 reason/归一 channel
+   → 输出 IntelItem 列表（content/channel/priority/…）
+        │
+L2（跨群）CrossGroupAggregator
+   跨群指纹去重（shared.fingerprint，同内容多群只留一条）
+   → 按 channel 聚合（apikey/resource/deal/intel/method/other）
+   → 每频道预算截断（max_items_per_channel）
+   → 超阈值分片提示（candidates > l2_shard_threshold 时按频道分组）
+        │
+ChannelPacker（打包推送）
+   按 channels_enabled（只推订阅的频道）+ channel_push_mode（split/merged）
+   → 单条超长自动分页（push_max_chars）
+   → 每条独立 _send_alert 推送
+```
+
+**频道（channel）分类**（与降噪层优先级共用 `intel_taxonomy`）：
+| channel | 含义 | 默认优先级 | emoji |
+|---------|------|-----------|-------|
+| `apikey` | 密钥/凭证 | critical | 🔴 |
+| `resource` | 资源链接 | normal | 📦 |
+| `deal` | 商机 | normal | 💰 |
+| `intel` | 情报 | normal | 📡 |
+| `method` | 干货方法 | normal | 🛠 |
+| `other` | 其他 | low | 📎 |
+
+**critical 旁路即时推送**（`critical_instant_push=true`，默认开）：keyword 模式下命中 critical（apikey 等）时，不走批量合并，直接即时推送——保证密钥泄露秒级送达。与降噪层的 critical 豁免冷却一致。
+
+**新增配置字段**（`message_monitor` 组，定制点 12 未覆盖）：
+| 配置项 | 默认值 | 说明 |
+|--------|--------|------|
+| `aggregation_mode` | `layered` | 跨群聚合方式：`layered`（分层，默认推荐）/ `legacy`（单次 LLM 聚类，4000 字截断） |
+| `channels_enabled` | `["apikey","resource","deal","intel","method"]` | 订阅推送的频道（白名单），`other` 默认不推 |
+| `channel_push_mode` | `split` | 频道打包：`split`（每频道一条）/ `merged`（一条分块） |
+| `l1_use_llm` | `false` | L1 是否用 LLM 提炼候选（关=纯规则，省 token；开=更准但每群一次小 LLM） |
+| `l1_parallel_groups` | `8` | L1 LLM 提炼的群级并发数 |
+| `l2_shard_threshold` | `60` | candidates 超此数触发分片提示（避免单次聚合过载） |
+| `max_items_per_channel` | `5` | 每频道最多保留几条（预算截断） |
+| `max_candidates_per_group` | `5` | L1 每群最多提炼几条候选 |
+| `critical_instant_push` | `true` | critical 命中是否绕过批量合并即时推送 |
+| `push_max_chars` | `1800` | 单条推送最大字符数，超长自动分页 |
+
+**新增/修改文件**：
+- `src/application/services/layered_aggregation.py`（`GroupCandidateExtractor`/`CrossGroupAggregator`/`ChannelPacker`/`content_fingerprint`）
+- `src/domain/entities/intel_item.py`（`IntelItem` dataclass）
+- `src/domain/services/intel_taxonomy.py`（channel/priority 权威定义，降噪层也复用）
+- `src/application/services/message_monitor_service.py`（`_flush_layered` / `_l1_llm_refine` / `_flush_all` 分流）
+- `src/infrastructure/config/config_manager.py`（上述配置 getter）
+- `_conf_schema.json`（上述字段）
 
 ---
 

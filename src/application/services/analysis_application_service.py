@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import asyncio
-import datetime as dt
 import time as time_mod
 import weakref
 from collections import defaultdict
@@ -27,6 +26,7 @@ from ...domain.services.incremental_merge_service import IncrementalMergeService
 from ...domain.services.statistics_service import StatisticsService
 from ...domain.value_objects.unified_message import UnifiedMessage
 from ...infrastructure.persistence.incremental_store import IncrementalStore
+from ...shared.timezone import from_timestamp
 from ...utils.logger import logger
 
 
@@ -262,7 +262,7 @@ class AnalysisApplicationService:
 
             # Note: LLMAnalyzer 目前可能只接收 legacy 格式或特定的 UnifiedMessage 适配
             # 暂时转换回 legacy 格式以确保稳定性，直到 LLMAnalyzer 被重构
-            legacy_messages = self.statistics_service._convert_to_legacy_dict(
+            legacy_messages = self.statistics_service.convert_to_legacy_dict(
                 unified_messages
             )
 
@@ -292,9 +292,7 @@ class AnalysisApplicationService:
             analysis_result = {
                 "statistics": statistics,
                 "topics": topics,
-                "user_titles": [],
                 "user_analysis": user_activity,
-                "chat_quality_review": None,
             }
 
             # 6. 持久化摘要 (Persistence)
@@ -440,7 +438,7 @@ class AnalysisApplicationService:
             )
 
             # 需要将 UnifiedMessage 转换为 legacy 格式供 LLM 分析器使用
-            legacy_messages = self.statistics_service._convert_to_legacy_dict(
+            legacy_messages = self.statistics_service.convert_to_legacy_dict(
                 unified_messages
             )
             unified_msg_origin = (
@@ -716,7 +714,7 @@ class AnalysisApplicationService:
         hourly_char: dict[int, int] = defaultdict(int)
 
         for msg in messages:
-            hour = dt.datetime.fromtimestamp(msg.timestamp).hour
+            hour = from_timestamp(msg.timestamp).hour
             hourly_msg[hour] += 1
             hourly_char[hour] += msg.get_text_length()
 

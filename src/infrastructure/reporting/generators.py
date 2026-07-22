@@ -758,10 +758,8 @@ class ReportGenerator(IReportGenerator):
             "emoji_count": stats.emoji_count,
             "most_active_period": stats.most_active_period,
             "topics_html": topics_html,
-            "titles_html": "",
             "quotes_html": quotes_html,
             "hourly_chart_html": hourly_chart_html,
-            "chat_quality_html": "",
             "total_tokens": stats.token_usage.total_tokens
             if stats.token_usage.total_tokens
             else 0,

@@ -60,7 +60,7 @@ class ConfigManager:
         glist = [str(g).strip() for g in self.get_group_list()]
         target = str(group_id_or_umo).strip()
 
-        is_in_list = any(self._is_group_match(target, item) for item in glist)
+        is_in_list = any(self.is_group_match(target, item) for item in glist)
 
         if mode == "whitelist":
             return is_in_list
@@ -69,7 +69,7 @@ class ConfigManager:
 
         return True
 
-    def _is_group_match(self, target: str, item: str) -> bool:
+    def is_group_match(self, target: str, item: str) -> bool:
         """
         核心匹配逻辑：判断名单中的 item 是否匹配目标的 target (Unified Message Origin, UMO 或 纯 ID)。
         支持处理 Telegram 话题 (#) 和 独立隔离会话 (_) 的双向穿透匹配。
@@ -749,12 +749,12 @@ class ConfigManager:
             if not group_list:
                 # 白名单为空：此级别不开启 (按需开启逻辑)
                 return False
-            return any(self._is_group_match(target, item) for item in group_list)
+            return any(self.is_group_match(target, item) for item in group_list)
         else:  # blacklist
             if not group_list:
                 # 黑名单为空：全通过
                 return True
-            return not any(self._is_group_match(target, item) for item in group_list)
+            return not any(self.is_group_match(target, item) for item in group_list)
 
     def set_min_messages_threshold(self, threshold: int):
         """设置最小消息阈值"""

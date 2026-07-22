@@ -11,7 +11,6 @@ ChannelPacker: split/merged 打成推送文案（Phase 2: 单条超长分页）
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import re
 import time
@@ -35,14 +34,9 @@ from ...domain.services.intel_taxonomy import (
     normalize_channel,
     priority_rank,
 )
+from ...shared.fingerprint import content_fingerprint
 from ...shared.timezone import now as _tz_now
 from ...utils.logger import logger
-
-
-def content_fingerprint(text: str) -> str:
-    normalized = re.sub(r"\s+", "", text or "").lower()
-    normalized = re.sub(r"[^\w]", "", normalized)
-    return hashlib.sha256(normalized.encode("utf-8", errors="ignore")).hexdigest()[:32]
 
 
 @dataclass

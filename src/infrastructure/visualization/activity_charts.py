@@ -4,9 +4,9 @@
 """
 
 from collections import defaultdict
-from datetime import datetime
 
 from ...domain.models.data_models import ActivityVisualization
+from ...shared.timezone import from_timestamp
 
 
 class ActivityVisualizer:
@@ -26,7 +26,7 @@ class ActivityVisualizer:
         # 分析消息数据
         for msg in messages:
             # 时间分析 - 只关注小时
-            msg_time = datetime.fromtimestamp(msg.get("time", 0))
+            msg_time = from_timestamp(msg.get("time", 0))
             hour = msg_time.hour
 
             # # 用户分析

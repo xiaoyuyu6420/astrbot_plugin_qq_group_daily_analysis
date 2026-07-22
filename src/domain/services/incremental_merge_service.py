@@ -331,9 +331,7 @@ class IncrementalMergeService:
         analysis_result = {
             "statistics": statistics,
             "topics": topics,
-            "user_titles": [],
             "user_analysis": state.user_activities,
-            "chat_quality_review": None,
         }
 
         logger.info(

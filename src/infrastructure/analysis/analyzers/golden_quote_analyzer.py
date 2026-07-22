@@ -3,9 +3,8 @@
 专门处理群聊金句提取和分析
 """
 
-from datetime import datetime
-
 from ....domain.models.data_models import GoldenQuote, TokenUsage
+from ....shared.timezone import from_timestamp
 from ....utils.logger import logger
 from ...utils.template_utils import render_template
 from ..utils import InfoUtils
@@ -203,7 +202,7 @@ class GoldenQuoteAnalyzer(BaseAnalyzer[GoldenQuote, list[dict]]):
             # 获取发送者显示名
             sender = msg.get("sender", {})
             nickname = InfoUtils.get_user_nickname(self.config_manager, sender)
-            msg_time = datetime.fromtimestamp(msg.get("time", 0)).strftime("%H:%M")
+            msg_time = from_timestamp(msg.get("time", 0)).strftime("%H:%M")
 
             for content in msg.get("message", []):
                 if content.get("type") == "text":

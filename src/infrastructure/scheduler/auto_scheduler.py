@@ -199,7 +199,7 @@ class AutoScheduler:
             for gid in cat.groups:
                 gid_str = str(gid).strip()
                 if gid_str and any(
-                    self.config_manager._is_group_match(gid_str, item)
+                    self.config_manager.is_group_match(gid_str, item)
                     for item in blacklist
                 ):
                     if gid_str not in conflicts:

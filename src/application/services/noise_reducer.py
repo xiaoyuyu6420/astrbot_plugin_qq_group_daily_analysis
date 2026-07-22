@@ -10,11 +10,15 @@
 """
 
 import asyncio
-import hashlib
-import re
 import time
 
+from ...domain.services.intel_taxonomy import (
+    PRIORITY_CRITICAL,
+    PRIORITY_LOW,
+    PRIORITY_NORMAL,
+)
 from ...infrastructure.config.config_manager import ConfigManager
+from ...shared.fingerprint import content_fingerprint
 from ...shared.timezone import now as _tz_now
 from ...utils.logger import logger
 
@@ -22,16 +26,17 @@ from ...utils.logger import logger
 class NoiseReducer:
     """智能降噪：冷却、去重、优先级分级、keyword 批量合并。"""
 
-    PRIORITY_CRITICAL = "critical"  # API key/Token → 立即推
-    PRIORITY_NORMAL = "normal"  # 资源链接/自定义关键词 → 批量合并
-    PRIORITY_LOW = "low"  # LLM 判定边缘 → 只进简报
+    # 优先级常量（单一来源：intel_taxonomy；此处保留为类属性以兼容外部访问）
+    PRIORITY_CRITICAL = PRIORITY_CRITICAL
+    PRIORITY_NORMAL = PRIORITY_NORMAL
+    PRIORITY_LOW = PRIORITY_LOW
 
-    # 内置正则 category → 优先级映射
+    # 内置正则 category → 优先级映射（正则命中名，与 intel_taxonomy 的 channel id 语义不同）
     CATEGORY_PRIORITY: dict[str, str] = {
-        "API Key": "critical",
-        "资源链接": "normal",
-        "渠道": "normal",
-        "关键词": "normal",
+        "API Key": PRIORITY_CRITICAL,
+        "资源链接": PRIORITY_NORMAL,
+        "渠道": PRIORITY_NORMAL,
+        "关键词": PRIORITY_NORMAL,
     }
 
     def __init__(self, config_manager: ConfigManager):
@@ -68,31 +73,31 @@ class NoiseReducer:
         """
         # 如果有任何 critical 类别命中 → critical
         for category, _desc in hits:
-            if self.CATEGORY_PRIORITY.get(category) == self.PRIORITY_CRITICAL:
-                return self.PRIORITY_CRITICAL
+            if self.CATEGORY_PRIORITY.get(category) == PRIORITY_CRITICAL:
+                return PRIORITY_CRITICAL
 
         # LLM 判定结果
         if llm_verdict is not None:
             # LLM 明确判定无用 → low
             if not llm_verdict.get("useful", True):
-                return self.PRIORITY_LOW
+                return PRIORITY_LOW
             # LLM 判定类别为"其他" → low
             llm_cat = llm_verdict.get("category", "")
             if llm_cat == "其他":
-                return self.PRIORITY_LOW
+                return PRIORITY_LOW
 
         # 按命中类别的最高优先级
-        best = self.PRIORITY_LOW
+        best = PRIORITY_LOW
         for category, _desc in hits:
-            p = self.CATEGORY_PRIORITY.get(category, self.PRIORITY_NORMAL)
-            if p == self.PRIORITY_CRITICAL:
-                return self.PRIORITY_CRITICAL
-            if p == self.PRIORITY_NORMAL and best == self.PRIORITY_LOW:
-                best = self.PRIORITY_NORMAL
+            p = self.CATEGORY_PRIORITY.get(category, PRIORITY_NORMAL)
+            if p == PRIORITY_CRITICAL:
+                return PRIORITY_CRITICAL
+            if p == PRIORITY_NORMAL and best == PRIORITY_LOW:
+                best = PRIORITY_NORMAL
 
         # 没有任何命中但有 llm_verdict（keyword 模式不应该走到这）
         if not hits and llm_verdict and llm_verdict.get("useful", False):
-            return self.PRIORITY_NORMAL
+            return PRIORITY_NORMAL
 
         return best
 
@@ -165,13 +170,8 @@ class NoiseReducer:
 
     @staticmethod
     def _fingerprint(text: str) -> str:
-        """内容指纹：归一化后取 sha256 前 32 字符。"""
-        # 归一化：去空白、转小写、去标点
-        normalized = re.sub(r"\s+", "", text).lower()
-        normalized = re.sub(r"[^\w]", "", normalized)
-        return hashlib.sha256(normalized.encode("utf-8", errors="ignore")).hexdigest()[
-            :32
-        ]
+        """内容指纹：归一化后取 sha256 前 32 字符。委托给 shared.fingerprint。"""
+        return content_fingerprint(text)
 
     # ============================================================
     # keyword 批量合并

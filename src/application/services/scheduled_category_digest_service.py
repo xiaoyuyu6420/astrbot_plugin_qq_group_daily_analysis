@@ -11,13 +11,12 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import re
 from dataclasses import dataclass, field
 from typing import Any
 
 from ...domain.entities.push_category import PushCategory
 from ...domain.services.message_cleaner_service import MessageCleanerService
+from ...shared.fingerprint import content_fingerprint
 from ...shared.timezone import now as _tz_now
 from ...shared.trace_context import TraceContext
 from ...utils.logger import logger
@@ -38,8 +37,8 @@ class ValueItem:
     def ensure_fingerprint(self) -> str:
         if self.fingerprint:
             return self.fingerprint
-        norm = re.sub(r"\s+", "", (self.content or "").lower())
-        self.fingerprint = hashlib.sha256(norm.encode("utf-8", errors="ignore")).hexdigest()[:16]
+        # 委托给 shared.fingerprint，与降噪层/分层聚合统一（32 字符 + 去标点）
+        self.fingerprint = content_fingerprint(self.content)
         return self.fingerprint
 
 
@@ -190,7 +189,7 @@ class ScheduledCategoryDigestService:
             # 黑名单优先级最高：显式屏蔽的群不放行（冲突由 schedule_jobs 打 warning）
             glist = [str(g).strip() for g in self.config_manager.get_group_list()]
             if glist and any(
-                self.config_manager._is_group_match(umo, item) for item in glist
+                self.config_manager.is_group_match(umo, item) for item in glist
             ):
                 return False
         # whitelist / none / 黑名单未命中：categories 显式列出即放行
@@ -234,7 +233,7 @@ class ScheduledCategoryDigestService:
             unified_messages,
             bot_self_ids,
         )
-        legacy_messages = svc.statistics_service._convert_to_legacy_dict(
+        legacy_messages = svc.statistics_service.convert_to_legacy_dict(
             unified_messages
         )
         resolved_platform = getattr(adapter, "platform_id", platform_id)

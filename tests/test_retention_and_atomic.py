@@ -103,14 +103,15 @@ class TestAtomicWrite:
         target = self.tmp / "history" / "group_g3.json"
 
         # 模拟 os.replace 失败（monkey-patch）
-        import src.infrastructure.persistence.history_repository as mod
+        # 原子写实现已抽取到 atomic_io 模块，patch 那里的 os.replace
+        import src.infrastructure.utils.atomic_io as atomic_mod
 
-        original_replace = mod.os.replace
+        original_replace = atomic_mod.os.replace
 
         def fail_replace(src, dst):
             raise OSError("simulated replace failure")
 
-        mod.os.replace = fail_replace
+        atomic_mod.os.replace = fail_replace
         try:
             # 应当抛异常（save_analysis_result 内部 except 会捕获并返回 False）
             ok = self.repo.save_analysis_result(
@@ -118,7 +119,7 @@ class TestAtomicWrite:
             )
             assert ok is False
         finally:
-            mod.os.replace = original_replace
+            atomic_mod.os.replace = original_replace
 
         # 原文件未被破坏，v1 仍可读
         data = json.loads(target.read_text(encoding="utf-8"))

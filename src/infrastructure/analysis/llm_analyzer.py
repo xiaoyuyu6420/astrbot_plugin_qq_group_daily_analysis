@@ -344,37 +344,16 @@ class LLMAnalyzer(IAnalysisProvider):
             session_id: 会话ID
         """
         try:
-            import json
-            import os
-            import tempfile
-
             from astrbot.api.star import StarTools
+
+            from ..utils.atomic_io import atomic_write_json
 
             debug_dir = StarTools.get_data_dir(PLUGIN_NAME) / "debug_data"
             debug_dir.mkdir(parents=True, exist_ok=True)
 
             msg_file_path = debug_dir / f"{session_id}_messages.json"
             # 原子写：避免半截 JSON 污染下次读取
-            tmp = tempfile.NamedTemporaryFile(
-                mode="w",
-                encoding="utf-8",
-                prefix=f".{session_id}_",
-                suffix=".tmp",
-                dir=str(debug_dir),
-                delete=False,
-            )
-            try:
-                with tmp:
-                    json.dump(messages, tmp, ensure_ascii=False, indent=2)
-                    tmp.flush()
-                    os.fsync(tmp.fileno())
-                os.replace(tmp.name, str(msg_file_path))
-            except Exception:
-                try:
-                    os.unlink(tmp.name)
-                except OSError:
-                    pass
-                raise
+            atomic_write_json(msg_file_path, messages)
 
             # 顺手清理过期 debug 文件，避免长期堆积
             # 默认保留 7 天（debug 数据本就是临时排查用，不需要跟 retention_days 一样长）
