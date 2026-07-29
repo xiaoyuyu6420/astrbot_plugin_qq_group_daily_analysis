@@ -492,6 +492,18 @@ class ConfigManager:
             return "split"
         return mode
 
+    def get_category_output_format(self) -> str:
+        """by_category 输出格式：image（默认，转图私聊）或 text（纯文本）。
+
+        仅 delivery_mode=by_category 生效；与 basic.output_format（per_group）解耦。
+        """
+        fmt = str(
+            self._get_group("auto_analysis").get("category_output_format", "image")
+        ).strip().lower()
+        if fmt not in ("image", "text"):
+            return "image"
+        return fmt
+
     def get_push_categories(self) -> list:
         """解析用户分类列表，归一化为 list[PushCategory]。
 

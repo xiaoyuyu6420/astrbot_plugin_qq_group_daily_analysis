@@ -45,7 +45,7 @@
                     "by_category"
                 ],
                 "default": "per_group",
-                "hint": "per_group（默认，群少）= 对 scheduled_group_list 里每个群出完整日报。\nby_category（群多）= 按下方 categories 分类聚合：每个分类下挂若干群，到点输出分类摘要（文本）。\nby_category 不走增量分析；增量仍只服务 per_group。"
+                "hint": "per_group（默认，群少）= 对 scheduled_group_list 里每个群出完整日报。\nby_category（群多）= 按下方 categories 分类聚合：每个分类下挂若干群，到点输出分类摘要（默认图片，可由 category_output_format 改为文本）。\nby_category 不走增量分析；增量仍只服务 per_group。"
             },
             "category_push_mode": {
                 "type": "string",
@@ -55,7 +55,17 @@
                     "merged"
                 ],
                 "default": "split",
-                "hint": "仅 delivery_mode=by_category 生效。\nsplit（默认）= 每个分类各推一条（科技日报 / AI 日报）。\nmerged = 合并成一条总简报，按分类分块。"
+                "hint": "仅 delivery_mode=by_category 生效。\nsplit（默认）= 每个分类各推一条（科技日报 / AI 日报）。\nmerged = 合并成一条总简报，按分类分块。\n输出是图片还是文本由 category_output_format 决定。"
+            },
+            "category_output_format": {
+                "type": "string",
+                "description": "【分类聚合】输出格式",
+                "options": [
+                    "image",
+                    "text"
+                ],
+                "default": "image",
+                "hint": "仅 delivery_mode=by_category 生效。\nimage（默认）= 分类摘要渲染为图片后私聊管理员，失败自动回退文本。\ntext = 直接发纯文本摘要。\n与 basic.output_format（控制 per_group 群发格式）相互独立。"
             },
             "categories": {
                 "type": "text",

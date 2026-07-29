@@ -108,3 +108,35 @@ class HTMLTemplates:
         except Exception as e:
             logger.error(f"渲染模板 {template_name} 失败: {e}")
             return ""
+
+    def _get_category_digest_env(self) -> Environment:
+        """分类摘要固定使用 simple 主题，与用户 report_template 配置解耦。"""
+        cache_key = "__category_digest_simple__"
+        with self._env_lock:
+            env = self._envs.get(cache_key)
+            if env is not None:
+                return env
+
+        template_dir = os.path.join(self.base_dir, "simple")
+        env = Environment(
+            loader=FileSystemLoader(template_dir),
+            autoescape=select_autoescape(["html", "xml"]),
+            trim_blocks=True,
+            lstrip_blocks=True,
+        )
+        with self._env_lock:
+            existing = self._envs.get(cache_key)
+            if existing is not None:
+                return existing
+            self._envs[cache_key] = env
+        return env
+
+    def render_category_digest(self, **kwargs) -> str:
+        """渲染 by_category 分类摘要专用模板（固定 simple 主题）。"""
+        try:
+            env = self._get_category_digest_env()
+            template = env.get_template("category_digest_template.html")
+            return template.render(**kwargs)
+        except Exception as e:
+            logger.error(f"渲染分类摘要模板失败: {e}")
+            return ""

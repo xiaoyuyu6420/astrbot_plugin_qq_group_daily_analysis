@@ -3,7 +3,7 @@
 
 只服务 delivery_mode=by_category 的定时链路：
 按用户分类（科技/AI/自定义）下挂的群列表，抽取当日有价值信息，
-打包成文本 digest 私聊管理员。
+打包成 digest 私聊管理员（默认图片，失败回退文本）。
 
 与实时监控的分层聚合 / 内容频道无关。
 """
@@ -11,7 +11,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from ...domain.entities.push_category import PushCategory
@@ -21,6 +24,9 @@ from ...shared.timezone import now as _tz_now
 from ...shared.trace_context import TraceContext
 from ...utils.logger import logger
 from ...infrastructure.utils.admin_resolver import resolve_admin_qqs
+
+# 分类摘要单张图最多展示的条目数（与 _format_items 默认一致）
+_MAX_ITEMS_PER_SECTION = 12
 
 
 @dataclass
@@ -61,11 +67,29 @@ class ScheduledCategoryDigestService:
         analysis_service: Any,
         bot_manager: Any,
         report_dispatcher: Any | None = None,
+        report_generator: Any | None = None,
+        html_render_func: Any | None = None,
+        data_dir: str | Path | None = None,
     ):
         self.config_manager = config_manager
         self.analysis_service = analysis_service
         self.bot_manager = bot_manager
         self.report_dispatcher = report_dispatcher
+        self.report_generator = report_generator
+        self.html_render_func = html_render_func
+        # 落盘目录：{plugin_data}/digests
+        if data_dir is not None:
+            self._digests_dir = Path(data_dir) / "digests"
+        else:
+            self._digests_dir = Path("/tmp/astrbot_digests")
+        self._digests_dir.mkdir(parents=True, exist_ok=True)
+        # 保留天数
+        try:
+            self._digest_retain_days = int(
+                self.config_manager.get_digest_retain_days()
+            ) if hasattr(self.config_manager, "get_digest_retain_days") else 7
+        except Exception:
+            self._digest_retain_days = 7
 
     async def run(self, platform_id: str | None = None) -> dict[str, Any]:
         """执行一次分类聚合定时任务。"""
@@ -78,12 +102,16 @@ class ScheduledCategoryDigestService:
             return {"success": False, "reason": "empty_categories"}
 
         push_mode = self.config_manager.get_category_push_mode()
+        output_format = "text"
+        if hasattr(self.config_manager, "get_category_output_format"):
+            output_format = self.config_manager.get_category_output_format()
         max_concurrent = self.config_manager.get_max_concurrent_tasks() or 3
         stagger = self.config_manager.get_stagger_seconds() or 2
 
         logger.info(
             f"[{trace_id}] 分类聚合定时开始: {len(categories)} 个分类, "
-            f"push_mode={push_mode}, concurrent={max_concurrent}"
+            f"push_mode={push_mode}, output_format={output_format}, "
+            f"concurrent={max_concurrent}"
         )
 
         digests: list[CategoryDigest] = []
@@ -96,8 +124,8 @@ class ScheduledCategoryDigestService:
             )
             digests.append(digest)
 
-        messages = self.pack_digests(digests, push_mode=push_mode)
-        if not messages:
+        text_messages = self.pack_digests(digests, push_mode=push_mode)
+        if not text_messages:
             logger.info(f"[{trace_id}] 分类聚合无有效内容，不推送")
             return {
                 "success": True,
@@ -106,13 +134,79 @@ class ScheduledCategoryDigestService:
                 "messages_sent": 0,
             }
 
-        sent = await self._send_to_admins(messages, platform_id=platform_id)
+        # 组装 (image_url|None, text_fallback) 列表
+        deliveries: list[tuple[str | None, str]] = []
+        if output_format == "image":
+            deliveries = await self._render_image_deliveries(
+                digests, text_messages, push_mode=push_mode
+            )
+        else:
+            deliveries = [(None, msg) for msg in text_messages]
+
+        sent = await self._send_to_admins(deliveries, platform_id=platform_id)
+        # 落盘：把本次 digest 存到磁盘，失败也不影响推送结果
+        digest_path = await self._persist_digests(digests, deliveries, sent)
+        # 清理过期文件
+        self._cleanup_old_digests()
         return {
             "success": sent > 0,
             "digests": digests,
             "messages_sent": sent,
-            "message_count": len(messages),
+            "message_count": len(deliveries),
+            "output_format": output_format,
+            "digest_path": digest_path,
         }
+
+    async def _render_image_deliveries(
+        self,
+        digests: list[CategoryDigest],
+        text_messages: list[str],
+        push_mode: str,
+    ) -> list[tuple[str | None, str]]:
+        """按 payload 渲染图片，失败则对应位置 image_url 为 None（走文本兜底）。"""
+        trace_id = TraceContext.get()
+        payloads = self.pack_digests_payload(digests, push_mode=push_mode)
+        # pack_digests 在全空时返回 1 条总览，payload 也可能 1 条；对齐长度
+        if len(payloads) != len(text_messages):
+            logger.warning(
+                f"[{trace_id}] 分类摘要 payload({len(payloads)}) 与 "
+                f"文本({len(text_messages)}) 条数不一致，按较短者对齐"
+            )
+
+        # 无 report_generator / html_render_func 时整批回退文本
+        if not self.report_generator or not self.html_render_func:
+            logger.warning(
+                f"[{trace_id}] 分类摘要图片渲染不可用"
+                f"（generator={bool(self.report_generator)}, "
+                f"render_func={bool(self.html_render_func)}），回退文本"
+            )
+            return [(None, msg) for msg in text_messages]
+
+        deliveries: list[tuple[str | None, str]] = []
+        pairs = list(zip(payloads, text_messages, strict=False))
+        # 若 payload 更少，剩余纯文本；若文本更少，多余 payload 忽略
+        for payload, text in pairs:
+            try:
+                image_url, _html = await self.report_generator.render_category_digest_image(
+                    payload,
+                    self.html_render_func,
+                    context_label=f"category:{payload.get('title', '')}",
+                )
+            except Exception as e:
+                logger.error(f"[{trace_id}] 分类摘要图片渲染异常: {e}")
+                image_url = None
+            deliveries.append((image_url, text))
+
+        # 文本比 payload 多的部分纯文本补齐
+        if len(text_messages) > len(payloads):
+            for text in text_messages[len(payloads) :]:
+                deliveries.append((None, text))
+
+        ok_imgs = sum(1 for img, _ in deliveries if img)
+        logger.info(
+            f"[{trace_id}] 分类摘要图片渲染完成: {ok_imgs}/{len(deliveries)} 成功"
+        )
+        return deliveries
 
     async def _build_category_digest(
         self,
@@ -365,6 +459,100 @@ class ScheduledCategoryDigestService:
             messages.append("\n".join(lines).rstrip())
         return messages
 
+    def pack_digests_payload(
+        self,
+        digests: list[CategoryDigest],
+        push_mode: str = "split",
+        date_str: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """打包成图片模板渲染载荷列表（与 pack_digests 条数语义对齐）。"""
+        date_str = date_str or _tz_now().strftime("%Y-%m-%d")
+        mode = (push_mode or "split").strip().lower()
+        if mode not in ("split", "merged"):
+            mode = "split"
+
+        non_empty = [d for d in digests if d.items]
+        if not non_empty:
+            overview_lines = [
+                f"{d.name}：分析 {len(d.groups_analyzed)} 群 / 跳过 {len(d.groups_skipped)}"
+                for d in digests
+            ]
+            return [
+                {
+                    "title": f"分类日报 {date_str}",
+                    "date_str": date_str,
+                    "overall_meta": "今日无价值信息",
+                    "sections": [
+                        {
+                            "category_name": "",
+                            "meta": "今日各分类未提取到有价值信息。",
+                            "entries": [
+                                {
+                                    "index": i,
+                                    "content": line,
+                                    "reason": "",
+                                    "source_group_id": "",
+                                }
+                                for i, line in enumerate(overview_lines, 1)
+                            ],
+                            "omitted": 0,
+                        }
+                    ]
+                    if overview_lines
+                    else [],
+                }
+            ]
+
+        if mode == "merged":
+            sections = [self._section_from_digest(d) for d in non_empty]
+            total_items = sum(len(d.items) for d in non_empty)
+            return [
+                {
+                    "title": f"分类日报 {date_str}",
+                    "date_str": date_str,
+                    "overall_meta": (
+                        f"{len(non_empty)} 个分类 · {total_items} 条"
+                    ),
+                    "sections": sections,
+                }
+            ]
+
+        # split：每个非空分类一张图
+        payloads: list[dict[str, Any]] = []
+        for d in non_empty:
+            payloads.append(
+                {
+                    "title": f"{d.name}日报 {date_str}",
+                    "date_str": date_str,
+                    "overall_meta": (
+                        f"{len(d.groups_analyzed)} 群 · {len(d.items)} 条"
+                    ),
+                    "sections": [self._section_from_digest(d, show_name=False)],
+                }
+            )
+        return payloads
+
+    @staticmethod
+    def _section_from_digest(
+        digest: CategoryDigest, show_name: bool = True, max_items: int = _MAX_ITEMS_PER_SECTION
+    ) -> dict[str, Any]:
+        items = digest.items[:max_items]
+        omitted = max(0, len(digest.items) - max_items)
+        return {
+            "category_name": digest.name if show_name else "",
+            "meta": f"{len(digest.groups_analyzed)} 群 · {len(digest.items)} 条",
+            "entries": [
+                {
+                    "index": i,
+                    "content": item.content,
+                    "reason": item.reason or "",
+                    "source_group_id": item.source_group_id or "",
+                }
+                for i, item in enumerate(items, 1)
+            ],
+            "omitted": omitted,
+        }
+
     @staticmethod
     def _format_items(items: list[ValueItem], max_items: int = 12) -> list[str]:
         lines: list[str] = []
@@ -380,10 +568,22 @@ class ScheduledCategoryDigestService:
             lines.append(f"… 另有 {len(items) - max_items} 条已省略")
         return lines
 
+    @staticmethod
+    def _make_image_caption() -> str:
+        """分类摘要图片 caption，保留 | 时间戳格式便于去重。"""
+        return f"📊 分类情报摘要已生成 | {_tz_now().strftime('%m-%d %H:%M:%S')}"
+
     async def _send_to_admins(
-        self, messages: list[str], platform_id: str | None
+        self,
+        deliveries: list[tuple[str | None, str]] | list[str],
+        platform_id: str | None,
     ) -> int:
-        """私聊管理员发送文本 digest。"""
+        """私聊管理员发送 digest。
+
+        deliveries 支持：
+        - list[tuple[image_url|None, text]]：图片优先，失败回退文本
+        - list[str]：纯文本（向后兼容）
+        """
         trace_id = TraceContext.get()
         adapter = self.bot_manager.get_adapter(platform_id)
         if not adapter or not hasattr(adapter, "send_private"):
@@ -405,19 +605,141 @@ class ScheduledCategoryDigestService:
             logger.warning(f"[{trace_id}] 无管理员 QQ，分类摘要未发出")
             return 0
 
+        # 归一化为 (image_url|None, text)
+        normalized: list[tuple[str | None, str]] = []
+        for item in deliveries:
+            if isinstance(item, tuple) and len(item) == 2:
+                normalized.append((item[0], item[1]))
+            else:
+                normalized.append((None, str(item)))
+
+        caption = self._make_image_caption()
         sent = 0
-        for msg in messages:
+        for image_url, text in normalized:
             for qq in admin_qqs:
                 try:
-                    ok = await adapter.send_private(user_id=qq, text=msg)
+                    ok = False
+                    if image_url:
+                        ok = await adapter.send_private(
+                            user_id=qq, image_path=image_url, text=caption
+                        )
+                        if not ok:
+                            logger.warning(
+                                f"[{trace_id}] 私聊图片发送 {qq} 失败，回退文本"
+                            )
+                            ok = await adapter.send_private(user_id=qq, text=text)
+                    else:
+                        ok = await adapter.send_private(user_id=qq, text=text)
                     if ok:
                         sent += 1
                     else:
                         logger.warning(f"[{trace_id}] 私聊 {qq} 分类摘要失败")
                 except Exception as e:
                     logger.error(f"[{trace_id}] 私聊 {qq} 异常: {e}")
+                    # 异常时再尝试纯文本，尽量保证推送不丢
+                    try:
+                        if await adapter.send_private(user_id=qq, text=text):
+                            sent += 1
+                            logger.info(f"[{trace_id}] 异常后文本回退成功: {qq}")
+                    except Exception as e2:
+                        logger.error(f"[{trace_id}] 文本回退也失败 {qq}: {e2}")
         logger.info(
-            f"[{trace_id}] 分类摘要推送完成: {len(messages)} 条消息 × "
+            f"[{trace_id}] 分类摘要推送完成: {len(normalized)} 条消息 × "
             f"{len(admin_qqs)} 人, 成功 {sent}"
         )
         return sent
+
+    async def _persist_digests(
+        self,
+        digests: list[CategoryDigest],
+        deliveries: list[tuple[str | None, str]],
+        sent_count: int,
+    ) -> str | None:
+        """持久化 digest 数据到磁盘，用于重渲染/重推。
+
+        Args:
+            digests: 分类摘要列表
+            deliveries: (image_url|None, text) 元组列表
+            sent_count: 成功发送数量
+
+        Returns:
+            落盘文件路径，失败返回 None
+        """
+        trace_id = TraceContext.get()
+        try:
+            timestamp = _tz_now().strftime("%Y%m%d_%H%M%S")
+            filename = f"digest_{timestamp}.json"
+            filepath = self._digests_dir / filename
+
+            # 序列化 digests
+            digest_data = {
+                "timestamp": _tz_now().isoformat(),
+                "digests": [
+                    {
+                        "name": d.name,
+                        "items": [
+                            {
+                                "content": item.content,
+                                "reason": item.reason,
+                                "source_group_id": item.source_group_id,
+                                "source_user_id": item.source_user_id,
+                                "kind": item.kind,
+                                "fingerprint": item.fingerprint,
+                            }
+                            for item in d.items
+                        ],
+                        "groups_analyzed": d.groups_analyzed,
+                        "groups_skipped": d.groups_skipped,
+                    }
+                    for d in digests
+                ],
+                "deliveries": [
+                    {"image_url": img, "text": txt}
+                    for img, txt in deliveries
+                ],
+                "sent_count": sent_count,
+            }
+
+            # 异步写入文件
+            def _write():
+                with open(filepath, "w", encoding="utf-8") as f:
+                    json.dump(digest_data, f, ensure_ascii=False, indent=2)
+
+            await asyncio.to_thread(_write)
+            logger.info(f"[{trace_id}] Digest 落盘成功: {filepath}")
+            return str(filepath)
+
+        except Exception as e:
+            logger.error(f"[{trace_id}] Digest 落盘失败: {e}")
+            return None
+
+    def _cleanup_old_digests(self) -> None:
+        """清理过期的 digest 文件。"""
+        trace_id = TraceContext.get()
+        try:
+            cutoff_date = datetime.now() - timedelta(days=self._digest_retain_days)
+            deleted_count = 0
+
+            for filepath in self._digests_dir.glob("digest_*.json"):
+                try:
+                    # 从文件名解析时间戳
+                    # 格式: digest_YYYYMMDD_HHMMSS.json
+                    parts = filepath.stem.split("_")
+                    if len(parts) >= 3:
+                        date_str = f"{parts[1]}_{parts[2]}"
+                        file_time = datetime.strptime(date_str, "%Y%m%d_%H%M%S")
+                        if file_time < cutoff_date:
+                            filepath.unlink()
+                            deleted_count += 1
+                except Exception as e:
+                    logger.warning(
+                        f"[{trace_id}] 解析或删除 digest 文件失败 {filepath}: {e}"
+                    )
+
+            if deleted_count > 0:
+                logger.info(
+                    f"[{trace_id}] 清理过期 digest 文件: {deleted_count} 个"
+                )
+
+        except Exception as e:
+            logger.error(f"[{trace_id}] 清理过期 digest 文件失败: {e}")

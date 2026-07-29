@@ -11,28 +11,44 @@ from src.application.services.scheduled_category_digest_service import (
 )
 from src.domain.entities.push_category import PushCategory
 from src.infrastructure.config.config_manager import ConfigManager
+from src.infrastructure.reporting.templates import HTMLTemplates
 from tests.conftest import AstrBotConfig
 
 
-def _service(cfg: ConfigManager | None = None) -> ScheduledCategoryDigestService:
-    if cfg is None:
-        cfg = ConfigManager(
-            AstrBotConfig(
-                {
-                    "basic": {"group_list_mode": "none"},
-                    "auto_analysis": {
-                        "delivery_mode": "by_category",
-                        "category_push_mode": "split",
-                        "categories": [],
-                    },
-                    "admin_notify": {"extra_admin_qq": ["10001"]},
-                }
-            )
+def _make_cfg(**auto_overrides) -> ConfigManager:
+    auto = {
+        "delivery_mode": "by_category",
+        "category_push_mode": "split",
+        "category_output_format": "text",
+        "categories": [],
+    }
+    auto.update(auto_overrides)
+    return ConfigManager(
+        AstrBotConfig(
+            {
+                "basic": {"group_list_mode": "none"},
+                "auto_analysis": auto,
+                "admin_notify": {"extra_admin_qq": ["10001"]},
+            }
         )
+    )
+
+
+def _service(
+    cfg: ConfigManager | None = None,
+    *,
+    report_generator=None,
+    html_render_func=None,
+    bot_manager=None,
+) -> ScheduledCategoryDigestService:
+    if cfg is None:
+        cfg = _make_cfg()
     return ScheduledCategoryDigestService(
         config_manager=cfg,
         analysis_service=MagicMock(),
-        bot_manager=MagicMock(),
+        bot_manager=bot_manager or MagicMock(),
+        report_generator=report_generator,
+        html_render_func=html_render_func,
     )
 
 
@@ -237,3 +253,239 @@ def test_blacklist_still_skips_categories_group():
     assert digest.groups_skipped == ["222"]
     assert len(digest.items) == 1
     assert digest.items[0].source_group_id == "111"
+
+
+def test_pack_digests_payload_split_and_merged():
+    svc = _service()
+    digests = [
+        CategoryDigest(
+            name="科技",
+            items=[
+                ValueItem(content="A 工具", source_group_id="111", reason="资源"),
+                ValueItem(content="B 商机", source_group_id="222"),
+            ],
+            groups_analyzed=["111", "222"],
+        ),
+        CategoryDigest(
+            name="AI",
+            items=[ValueItem(content="模型更新", source_group_id="333")],
+            groups_analyzed=["333"],
+        ),
+        CategoryDigest(name="闲聊", items=[], groups_analyzed=["444"]),
+    ]
+    split = svc.pack_digests_payload(digests, push_mode="split", date_str="2026-07-21")
+    assert len(split) == 2
+    assert "科技日报" in split[0]["title"]
+    assert split[0]["sections"][0]["category_name"] == ""  # split 不重复分类名
+    assert split[0]["sections"][0]["entries"][0]["content"] == "A 工具"
+    assert "AI日报" in split[1]["title"]
+
+    merged = svc.pack_digests_payload(digests, push_mode="merged", date_str="2026-07-21")
+    assert len(merged) == 1
+    assert "分类日报" in merged[0]["title"]
+    names = [s["category_name"] for s in merged[0]["sections"]]
+    assert names == ["科技", "AI"]
+
+
+def test_render_category_digest_template_nonempty():
+    cfg = _make_cfg()
+    html = HTMLTemplates(cfg).render_category_digest(
+        title="科技日报 2026-07-21",
+        date_str="2026-07-21",
+        overall_meta="2 群 · 1 条",
+        current_datetime="2026-07-21 12:00:00",
+        t2i_font_source="Overseas",
+        t2i_google_fonts_mirror="https://fonts.googleapis.com",
+        t2i_gstatic_mirror="https://fonts.gstatic.com",
+        sections=[
+            {
+                "category_name": "",
+                "meta": "2 群 · 1 条",
+                "entries": [
+                    {
+                        "index": 1,
+                        "content": "A 工具发布",
+                        "reason": "资源",
+                        "source_group_id": "111",
+                    }
+                ],
+                "omitted": 0,
+            }
+        ],
+    )
+    assert html
+    assert "科技日报" in html
+    assert "A 工具发布" in html
+    assert "群111" in html
+
+
+def test_send_to_admins_image_preferred_then_text_fallback():
+    """图片发送成功走 image_path；图片发送失败回退 text。"""
+    adapter = MagicMock()
+    adapter.send_private = AsyncMock(side_effect=[True, False, True])
+    # 调用顺序：
+    # 1) 第一条 delivery 图片成功
+    # 2) 第二条 delivery 图片失败
+    # 3) 第二条 delivery 文本回退成功
+
+    bot = MagicMock()
+    bot.get_adapter = MagicMock(return_value=adapter)
+    bot.get_platform_ids = MagicMock(return_value=["onebot"])
+    bot._context = None
+
+    cfg = _make_cfg()
+    # resolve_admin_qqs 依赖 extra_admin_qq
+    svc = _service(cfg, bot_manager=bot)
+
+    deliveries = [
+        ("base64://AAA", "文本兜底1"),
+        ("base64://BBB", "文本兜底2"),
+    ]
+    sent = asyncio.run(svc._send_to_admins(deliveries, platform_id="onebot"))
+    assert sent == 2
+
+    calls = adapter.send_private.await_args_list
+    assert len(calls) == 3
+    # 第一次：图片
+    assert calls[0].kwargs.get("image_path") == "base64://AAA"
+    # 第二次：图片失败
+    assert calls[1].kwargs.get("image_path") == "base64://BBB"
+    # 第三次：文本回退
+    assert calls[2].kwargs.get("text") == "文本兜底2"
+    assert "image_path" not in calls[2].kwargs or not calls[2].kwargs.get("image_path")
+
+
+def test_run_image_format_uses_render_and_send_private_image():
+    """category_output_format=image 时走 render_category_digest_image 并私聊图片。"""
+    cfg = _make_cfg(
+        category_output_format="image",
+        category_push_mode="split",
+        categories=[{"name": "科技", "groups": ["111"]}],
+    )
+
+    adapter = MagicMock()
+    adapter.platform_id = "onebot"
+    adapter.send_private = AsyncMock(return_value=True)
+
+    bot = MagicMock()
+    bot.get_adapter = MagicMock(return_value=adapter)
+    bot.get_platform_ids = MagicMock(return_value=["onebot"])
+    bot._context = None
+
+    report_generator = MagicMock()
+    report_generator.render_category_digest_image = AsyncMock(
+        return_value=("base64://IMGDATA", "<html/>")
+    )
+    html_render = AsyncMock(return_value=b"\x89PNG\r\n\x1a\n")
+
+    svc = _service(
+        cfg,
+        bot_manager=bot,
+        report_generator=report_generator,
+        html_render_func=html_render,
+    )
+    # 跳过真实抽取
+    svc._build_category_digest = AsyncMock(
+        return_value=CategoryDigest(
+            name="科技",
+            items=[ValueItem(content="A 工具", source_group_id="111")],
+            groups_analyzed=["111"],
+        )
+    )
+
+    result = asyncio.run(svc.run(platform_id="onebot"))
+    assert result["success"] is True
+    assert result["output_format"] == "image"
+    assert result["messages_sent"] == 1
+    report_generator.render_category_digest_image.assert_awaited()
+    # 私聊应带 image_path
+    kwargs = adapter.send_private.await_args.kwargs
+    assert kwargs.get("image_path") == "base64://IMGDATA"
+
+
+def test_run_image_format_falls_back_to_text_when_render_fails():
+    cfg = _make_cfg(
+        category_output_format="image",
+        categories=[{"name": "科技", "groups": ["111"]}],
+    )
+    adapter = MagicMock()
+    adapter.send_private = AsyncMock(return_value=True)
+    bot = MagicMock()
+    bot.get_adapter = MagicMock(return_value=adapter)
+    bot.get_platform_ids = MagicMock(return_value=["onebot"])
+    bot._context = None
+
+    report_generator = MagicMock()
+    report_generator.render_category_digest_image = AsyncMock(return_value=(None, None))
+
+    svc = _service(
+        cfg,
+        bot_manager=bot,
+        report_generator=report_generator,
+        html_render_func=AsyncMock(),
+    )
+    svc._build_category_digest = AsyncMock(
+        return_value=CategoryDigest(
+            name="科技",
+            items=[ValueItem(content="A 工具", source_group_id="111")],
+            groups_analyzed=["111"],
+        )
+    )
+
+    result = asyncio.run(svc.run(platform_id="onebot"))
+    assert result["success"] is True
+    kwargs = adapter.send_private.await_args.kwargs
+    assert not kwargs.get("image_path")
+    assert "A 工具" in kwargs.get("text", "")
+
+
+def test_run_text_format_skips_image_render():
+    cfg = _make_cfg(
+        category_output_format="text",
+        categories=[{"name": "科技", "groups": ["111"]}],
+    )
+    adapter = MagicMock()
+    adapter.send_private = AsyncMock(return_value=True)
+    bot = MagicMock()
+    bot.get_adapter = MagicMock(return_value=adapter)
+    bot.get_platform_ids = MagicMock(return_value=["onebot"])
+    bot._context = None
+
+    report_generator = MagicMock()
+    report_generator.render_category_digest_image = AsyncMock()
+
+    svc = _service(
+        cfg,
+        bot_manager=bot,
+        report_generator=report_generator,
+        html_render_func=AsyncMock(),
+    )
+    svc._build_category_digest = AsyncMock(
+        return_value=CategoryDigest(
+            name="科技",
+            items=[ValueItem(content="纯文本条目", source_group_id="111")],
+            groups_analyzed=["111"],
+        )
+    )
+
+    result = asyncio.run(svc.run(platform_id="onebot"))
+    assert result["output_format"] == "text"
+    report_generator.render_category_digest_image.assert_not_awaited()
+    kwargs = adapter.send_private.await_args.kwargs
+    assert "纯文本条目" in kwargs.get("text", "")
+    assert not kwargs.get("image_path")
+
+
+def test_get_category_output_format_defaults_and_validates():
+    cfg = ConfigManager(AstrBotConfig({"auto_analysis": {}}))
+    assert cfg.get_category_output_format() == "image"
+
+    cfg2 = ConfigManager(
+        AstrBotConfig({"auto_analysis": {"category_output_format": "TEXT"}})
+    )
+    assert cfg2.get_category_output_format() == "text"
+
+    cfg3 = ConfigManager(
+        AstrBotConfig({"auto_analysis": {"category_output_format": "html"}})
+    )
+    assert cfg3.get_category_output_format() == "image"

@@ -251,82 +251,22 @@ class ReportGenerator(IReportGenerator):
                             f"{data_desc}, 耗时 {elapsed_ms}ms"
                         )
 
-                        # 校验是否为合法图片（防止 T2I 返回 500 错误 HTML 字符流）
-                        is_valid = False
-                        actual_data_head = None
-                        invalid_reason = None
-
-                        if isinstance(image_data, bytes):
-                            actual_data_head = image_data[:10]
-                        elif isinstance(image_data, str) and os.path.exists(image_data):
-                            try:
-                                with open(image_data, "rb") as f:
-                                    actual_data_head = f.read(10)
-                            except Exception as e:
-                                invalid_reason = f"读取临时文件失败: {e}"
-                                logger.warning(f"[T2I] {invalid_reason}")
-                        elif isinstance(image_data, str):
-                            # 可能是 URL 或 base64 字符串
-                            if image_data.startswith(
-                                ("http://", "https://", "base64://", "data:image")
-                            ):
-                                is_valid = True
-                            else:
-                                invalid_reason = (
-                                    f"返回字符串既不是已存在路径也不是 URL/base64 "
-                                    f"(前80字: {image_data[:80]!r})"
-                                )
-
-                        if actual_data_head is not None and not is_valid:
-                            # 检查 magic numbers (JPEG: FF D8, PNG: 89 50 4E 47)
-                            if actual_data_head.startswith(
-                                b"\xff\xd8"
-                            ) or actual_data_head.startswith(b"\x89PNG"):
-                                is_valid = True
-                            else:
-                                html_error = None
-                                if isinstance(image_data, bytes):
-                                    html_error = self._extract_html_error_summary(
-                                        image_data
-                                    )
-                                elif isinstance(image_data, str) and os.path.exists(
-                                    image_data
-                                ):
-                                    try:
-                                        with open(image_data, "rb") as f:
-                                            html_error = (
-                                                self._extract_html_error_summary(
-                                                    f.read(4096)
-                                                )
-                                            )
-                                    except Exception:
-                                        pass
-
-                                if html_error:
-                                    invalid_reason = (
-                                        f"返回错误页而非图片: {html_error}"
-                                    )
-                                else:
-                                    invalid_reason = (
-                                        f"非图片 magic (头部 hex={actual_data_head.hex()})"
-                                    )
-
-                        if is_valid:
+                        is_valid, image_url, invalid_reason = (
+                            self._validate_and_normalize_image_data(image_data)
+                        )
+                        if is_valid and image_url:
                             if isinstance(image_data, bytes):
-                                b64 = base64.b64encode(image_data).decode("utf-8")
-                                image_url = f"base64://{b64}"
                                 logger.info(
                                     f"[T2I] 群 {group_id} 图片生成成功 "
                                     f"(轮次 {attempt}, {elapsed_ms}ms): "
                                     f"{len(image_data)} bytes base64"
                                 )
-                                return image_url, html_content
-                            elif isinstance(image_data, str):
+                            else:
                                 logger.info(
                                     f"[T2I] 群 {group_id} 图片生成成功 "
-                                    f"(轮次 {attempt}, {elapsed_ms}ms): {image_data}"
+                                    f"(轮次 {attempt}, {elapsed_ms}ms): {image_url}"
                                 )
-                                return image_data, html_content
+                            return image_url, html_content
 
                         summary = (
                             f"轮次{attempt}: 无效数据 "
@@ -389,6 +329,153 @@ class ReportGenerator(IReportGenerator):
             if self._avatar_session:
                 await self._avatar_session.close()
                 self._avatar_session = None
+
+    async def render_category_digest_image(
+        self,
+        payload: dict,
+        html_render_func,
+        context_label: str = "category_digest",
+    ) -> tuple[str | None, str | None]:
+        """将 by_category 分类摘要 payload 渲染为图片。
+
+        独立于 generate_image_report（后者依赖 per_group 的 statistics/topics 结构）。
+        复用 T2I 两轮策略、整体重试、信号量与返回值校验。
+
+        Args:
+            payload: 分类摘要模板上下文（title/date_str/sections/...）
+            html_render_func: AstrBot html_render 回调
+            context_label: 日志标识
+
+        Returns:
+            (image_url, html_content)；失败时 image_url 为 None
+        """
+        html_content = None
+        if not html_render_func:
+            logger.warning(f"[T2I][{context_label}] 未提供 html_render_func，跳过图片渲染")
+            return None, None
+
+        try:
+            # 字体/镜像上下文与 per_group 模板保持一致
+            render_ctx = {
+                "t2i_font_source": self.config_manager.get_t2i_font_source(),
+                "t2i_google_fonts_mirror": self.config_manager.get_t2i_google_fonts_mirror(),
+                "t2i_gstatic_mirror": self.config_manager.get_t2i_gstatic_mirror(),
+                "t2i_atri_font_mirror": self.config_manager.get_t2i_atri_font_mirror(),
+                "current_datetime": _tz_now().strftime("%Y-%m-%d %H:%M:%S"),
+                **payload,
+            }
+            html_content = self.html_templates.render_category_digest(**render_ctx)
+            if not html_content:
+                logger.error(f"[T2I][{context_label}] 分类摘要 HTML 渲染返回空")
+                return None, None
+
+            html_kb = len(html_content) / 1024
+            logger.info(
+                f"[T2I][{context_label}] HTML 准备完成: ~{html_kb:.1f} KB, "
+                f"title={payload.get('title', '')!r}"
+            )
+
+            retry_count = max(0, self.config_manager.get_image_retry_count())
+            interval = max(0, self.config_manager.get_image_retry_interval_seconds())
+            total_attempts = retry_count + 1
+            render_strategies = self.config_manager.get_t2i_rendering_strategies()
+
+            async with self._render_semaphore:
+                for overall in range(1, total_attempts + 1):
+                    attempt_summaries: list[str] = []
+                    last_exception = None
+
+                    for attempt, image_options in enumerate(render_strategies, 1):
+                        options = dict(image_options)
+                        if options.get("type") == "png":
+                            options.pop("quality", None)
+
+                        timeout_ms = options.get("timeout", "?")
+                        img_type = options.get("type", "?")
+                        t0 = time.monotonic()
+                        try:
+                            image_data = await html_render_func(
+                                html_content, {}, False, options
+                            )
+                            elapsed_ms = int((time.monotonic() - t0) * 1000)
+
+                            if image_data is None:
+                                summary = (
+                                    f"轮次{attempt}: 返回 None "
+                                    f"(耗时 {elapsed_ms}ms, type={img_type})"
+                                )
+                                attempt_summaries.append(summary)
+                                logger.warning(f"[T2I][{context_label}] {summary}")
+                                continue
+
+                            data_desc = self._describe_render_result(image_data)
+                            logger.info(
+                                f"[T2I][{context_label}] 第 {attempt} 轮返回: "
+                                f"{data_desc}, 耗时 {elapsed_ms}ms"
+                            )
+
+                            is_valid, image_url, invalid_reason = (
+                                self._validate_and_normalize_image_data(image_data)
+                            )
+                            if is_valid and image_url:
+                                logger.info(
+                                    f"[T2I][{context_label}] 图片生成成功 "
+                                    f"(整体第 {overall} 次, 策略轮次 {attempt}, "
+                                    f"{elapsed_ms}ms)"
+                                )
+                                return image_url, html_content
+
+                            summary = (
+                                f"轮次{attempt}: 无效数据 "
+                                f"({invalid_reason or '未知原因'}, "
+                                f"耗时 {elapsed_ms}ms, type={img_type})"
+                            )
+                            attempt_summaries.append(summary)
+                            logger.warning(f"[T2I][{context_label}] {summary}")
+                        except Exception as e:
+                            elapsed_ms = int((time.monotonic() - t0) * 1000)
+                            category, hint = self._classify_t2i_error(e)
+                            summary = (
+                                f"轮次{attempt}: 异常[{category}] "
+                                f"{type(e).__name__}: {e} "
+                                f"(耗时 {elapsed_ms}ms, type={img_type}, "
+                                f"timeout={timeout_ms}ms)"
+                            )
+                            attempt_summaries.append(summary)
+                            last_exception = e
+                            logger.warning(f"[T2I][{context_label}] {summary}")
+                            logger.warning(f"[T2I][{context_label}] 诊断提示: {hint}")
+
+                    if overall < total_attempts:
+                        logger.warning(
+                            f"[T2I][{context_label}] 图片渲染失败 "
+                            f"（第 {overall}/{total_attempts} 次），{interval}s 后重试"
+                        )
+                        await asyncio.sleep(interval)
+                    else:
+                        logger.error(
+                            f"[T2I][{context_label}] 全部 {total_attempts} 次尝试均失败。"
+                            f" HTML≈{html_kb:.1f}KB"
+                        )
+                        for s in attempt_summaries:
+                            logger.error(f"[T2I][{context_label}]   · {s}")
+                        if last_exception is not None:
+                            _, final_hint = self._classify_t2i_error(last_exception)
+                            logger.error(
+                                f"[T2I][{context_label}] 最终诊断: {final_hint}"
+                            )
+                        return None, html_content
+
+            return None, html_content
+        except Exception as e:
+            category, hint = self._classify_t2i_error(e)
+            logger.error(
+                f"[T2I][{context_label}] 分类摘要图片渲染严重错误 "
+                f"[{category}] {type(e).__name__}: {e}",
+                exc_info=True,
+            )
+            logger.error(f"[T2I][{context_label}] 诊断提示: {hint}")
+            return None, html_content
 
     async def generate_html_report(
         self,
@@ -1179,6 +1266,75 @@ class ReportGenerator(IReportGenerator):
                 logger.debug("头像缓存已关闭")
         except Exception as e:
             logger.warning(f"关闭头像缓存失败: {e}")
+
+    def _validate_and_normalize_image_data(
+        self, image_data
+    ) -> tuple[bool, str | None, str | None]:
+        """校验 html_render 返回值是否为合法图片，并归一化为可发送的 image_url。
+
+        Returns:
+            (is_valid, image_url, invalid_reason)
+            - is_valid=True 时 image_url 为 base64:// / 路径 / http(s) / data:image
+            - is_valid=False 时 invalid_reason 说明原因
+        """
+        if image_data is None:
+            return False, None, "返回 None"
+
+        is_valid = False
+        actual_data_head = None
+        invalid_reason = None
+
+        if isinstance(image_data, bytes):
+            actual_data_head = image_data[:10]
+        elif isinstance(image_data, str) and os.path.exists(image_data):
+            try:
+                with open(image_data, "rb") as f:
+                    actual_data_head = f.read(10)
+            except Exception as e:
+                return False, None, f"读取临时文件失败: {e}"
+        elif isinstance(image_data, str):
+            if image_data.startswith(
+                ("http://", "https://", "base64://", "data:image")
+            ):
+                return True, image_data, None
+            invalid_reason = (
+                f"返回字符串既不是已存在路径也不是 URL/base64 "
+                f"(前80字: {image_data[:80]!r})"
+            )
+        else:
+            return False, None, f"不支持的返回类型: {type(image_data).__name__}"
+
+        if actual_data_head is not None and not is_valid:
+            if actual_data_head.startswith(b"\xff\xd8") or actual_data_head.startswith(
+                b"\x89PNG"
+            ):
+                is_valid = True
+            else:
+                html_error = None
+                if isinstance(image_data, bytes):
+                    html_error = self._extract_html_error_summary(image_data)
+                elif isinstance(image_data, str) and os.path.exists(image_data):
+                    try:
+                        with open(image_data, "rb") as f:
+                            html_error = self._extract_html_error_summary(f.read(4096))
+                    except Exception:
+                        pass
+                if html_error:
+                    invalid_reason = f"返回错误页而非图片: {html_error}"
+                else:
+                    invalid_reason = (
+                        f"非图片 magic (头部 hex={actual_data_head.hex()})"
+                    )
+
+        if not is_valid:
+            return False, None, invalid_reason or "未知原因"
+
+        if isinstance(image_data, bytes):
+            b64 = base64.b64encode(image_data).decode("utf-8")
+            return True, f"base64://{b64}", None
+        if isinstance(image_data, str):
+            return True, image_data, None
+        return False, None, f"校验通过但无法归一化: {type(image_data).__name__}"
 
     @staticmethod
     def _describe_render_result(image_data) -> str:
