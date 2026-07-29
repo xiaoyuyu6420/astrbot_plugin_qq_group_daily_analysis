@@ -37,7 +37,7 @@ def _is_response_format_unsupported_error(error: Exception) -> bool:
 
 def _get_circuit_breaker(provider_id: str) -> CircuitBreaker:
     if provider_id not in _circuit_breakers:
-        _circuit_breakers[provider_id] = CircuitBreaker(name=f"provider_{provider_id}")
+        _circuit_breakers[provider_id] = CircuitBreaker(name=f"provider_{provider_id}", recovery_timeout=180)
     return _circuit_breakers[provider_id]
 
 
