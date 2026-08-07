@@ -7,7 +7,6 @@ from src.infrastructure.reporting.dispatcher import ReportDispatcher
 from src.infrastructure.reporting.generators import ReportGenerator
 from src.domain.value_objects.golden_quote import GoldenQuote
 from src.domain.value_objects.topic import Topic
-from tests.conftest import AstrBotConfig
 
 
 # ============================================================

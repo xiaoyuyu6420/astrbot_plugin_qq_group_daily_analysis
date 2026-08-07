@@ -355,6 +355,106 @@ def test_send_to_admins_image_preferred_then_text_fallback():
     assert "image_path" not in calls[2].kwargs or not calls[2].kwargs.get("image_path")
 
 
+def test_send_as_forward_includes_md_text_nodes():
+    """合并转发卡片：标题节点 + N 图片节点 + M md 文本节点。
+
+    验证目标（验证标准2 的代码层证据）：md 内容作为文本节点追加在图片节点之后，
+    不再单独发 .md 文件。
+    """
+    adapter = MagicMock()
+    adapter.bot_self_ids = ["10000"]
+    adapter.send_private_forward_msg = AsyncMock(return_value=True)
+
+    bot = MagicMock()
+    bot.get_adapter = MagicMock(return_value=adapter)
+
+    svc = _service(_make_cfg(), bot_manager=bot)
+
+    normalized = [("base64://IMG1", "兜底1"), ("base64://IMG2", "兜底2")]
+    md_contents = [("技术_AI日报.md", "# 技术/AI\n正文A"), ("商业_副业日报.md", "# 商业/副业\n正文B")]
+
+    sent = asyncio.run(
+        svc._send_as_forward(
+            adapter, normalized, ["10001"], "trace-test",
+            md_contents=md_contents,
+        )
+    )
+    assert sent == 1
+    # 抓取传给 send_private_forward_msg 的 nodes
+    call_kwargs = adapter.send_private_forward_msg.await_args.kwargs
+    nodes = call_kwargs["nodes"]
+    # 结构：1 标题 + 2 图片 + 2 md = 5 节点
+    assert len(nodes) == 5
+
+    # 节点类型断言
+    text_nodes = [n for n in nodes if n["data"]["content"][0]["type"] == "text"]
+    image_nodes = [n for n in nodes if n["data"]["content"][0]["type"] == "image"]
+    assert len(image_nodes) == 2  # 2 个图片节点
+    # 文本节点：1 标题 + 2 md = 3
+    assert len(text_nodes) == 3
+
+    # md 文本节点排在图片节点之后（顺序断言）
+    # 找到第一个 image 和最后一个 md 的位置
+    first_img_idx = next(i for i, n in enumerate(nodes) if n["data"]["content"][0]["type"] == "image")
+    last_md_idx = max(
+        i for i, n in enumerate(nodes)
+        if n["data"]["content"][0]["type"] == "text"
+        and n["data"]["name"] != "分类日报"  # 排除标题节点
+    )
+    assert last_md_idx > first_img_idx, "md 文本节点必须在图片节点之后"
+
+    # md 节点名去掉 .md 后缀
+    md_names = [
+        n["data"]["name"] for n in nodes
+        if n["data"]["content"][0]["type"] == "text" and n["data"]["name"] != "分类日报"
+    ]
+    assert md_names == ["技术_AI日报", "商业_副业日报"]
+
+    # md 节点内容正确
+    md_texts = [
+        n["data"]["content"][0]["data"]["text"] for n in nodes
+        if n["data"]["content"][0]["type"] == "text" and n["data"]["name"] != "分类日报"
+    ]
+    assert "# 技术/AI\n正文A" in md_texts
+    assert "# 商业/副业\n正文B" in md_texts
+
+
+def test_send_as_forward_without_md_backward_compat():
+    """md_contents=None 时退化为旧行为：仅标题 + 图片节点（向后兼容）。"""
+    adapter = MagicMock()
+    adapter.bot_self_ids = ["10000"]
+    adapter.send_private_forward_msg = AsyncMock(return_value=True)
+
+    bot = MagicMock()
+    bot.get_adapter = MagicMock(return_value=adapter)
+    svc = _service(_make_cfg(), bot_manager=bot)
+
+    normalized = [("base64://IMG1", "兜底1")]
+    sent = asyncio.run(
+        svc._send_as_forward(adapter, normalized, ["10001"], "trace", md_contents=None)
+    )
+    assert sent == 1
+    nodes = adapter.send_private_forward_msg.await_args.kwargs["nodes"]
+    # 仅 1 标题 + 1 图片，无 md 节点
+    assert len(nodes) == 2
+
+
+def test_send_md_via_qq_skipped_when_forward_enabled():
+    """合并转发开启时，_send_md_via_qq 跳过单独发文件（md 已在卡片里）。"""
+    cfg = _make_cfg(digest_use_forward_msg=True)
+    adapter = MagicMock()
+    adapter.send_private_file = AsyncMock(return_value=True)
+    bot = MagicMock()
+    bot.get_adapter = MagicMock(return_value=adapter)
+    svc = _service(cfg, bot_manager=bot)
+
+    sent = asyncio.run(
+        svc._send_md_via_qq([("a.md", "内容")], platform_id="onebot")
+    )
+    assert sent == 0
+    adapter.send_private_file.assert_not_called()
+
+
 def test_run_image_format_uses_render_and_send_private_image():
     """category_output_format=image 时走 render_category_digest_image 并私聊图片。"""
     cfg = _make_cfg(
@@ -489,3 +589,135 @@ def test_get_category_output_format_defaults_and_validates():
         AstrBotConfig({"auto_analysis": {"category_output_format": "html"}})
     )
     assert cfg3.get_category_output_format() == "image"
+
+
+# ====================================================================
+# Phase 1：群名/人名解析 + 信息截断可配 + 文本全量
+# ====================================================================
+
+
+def test_name_resolver_caches_group_name_and_falls_back():
+    """NameResolver：群名缓存命中不重复打 API；解析失败优雅降级回 ID。"""
+    from src.infrastructure.utils.name_resolver import NameResolver
+
+    call_count = {"n": 0}
+
+    async def fake_get_group_info(group_id):
+        call_count["n"] += 1
+        return SimpleNamespace(group_name=f"群名_{group_id}")
+
+    adapter = MagicMock()
+    adapter.get_group_info = fake_get_group_info
+    bot_manager = MagicMock()
+    bot_manager.get_adapter = MagicMock(return_value=adapter)
+
+    resolver = NameResolver(bot_manager)
+
+    async def go():
+        # 第一次：打 API
+        n1 = await resolver.resolve_group_name("111", "xms")
+        assert n1 == "群名_111"
+        # 第二次：命中缓存，不打 API
+        n2 = await resolver.resolve_group_name("111", "xms")
+        assert n2 == "群名_111"
+        assert call_count["n"] == 1  # 只打了一次
+        # 未知群：返回 ID 本身
+        n3 = await resolver.resolve_group_name("222", "xms")
+        assert n3 == "群名_222"
+
+    asyncio.run(go())
+
+
+def test_name_resolver_user_name_skips_readable_ids():
+    """source_user_id 已是昵称（非纯数字）时直接返回，不调 API。"""
+    from src.infrastructure.utils.name_resolver import NameResolver
+
+    call_count = {"n": 0}
+
+    async def fake_get_member_info(group_id, user_id):
+        call_count["n"] += 1
+        return SimpleNamespace(card="群名片", nickname="昵称")
+
+    adapter = MagicMock()
+    adapter.get_member_info = fake_get_member_info
+    bot_manager = MagicMock()
+    bot_manager.get_adapter = MagicMock(return_value=adapter)
+    resolver = NameResolver(bot_manager)
+
+    async def go():
+        # 已是可读名字（「夙梦」），不调 API
+        n1 = await resolver.resolve_user_name("111", "夙梦", "xms")
+        assert n1 == "夙梦"
+        assert call_count["n"] == 0
+        # 纯数字 ID 才解析（群名片优先）
+        n2 = await resolver.resolve_user_name("111", "999", "xms")
+        assert n2 == "群名片"
+
+    asyncio.run(go())
+
+
+def test_format_items_shows_group_and_user_names():
+    """_format_items：优先显示群名+人名，缺失才退回 ID。"""
+    items = [
+        ValueItem(
+            content="某条情报",
+            source_group_id="975206796",
+            source_group_name="AI搞钱群",
+            source_user_id="夙梦",
+            source_user_name="夙梦",
+        ),
+        ValueItem(
+            content="无名字的条目",
+            source_group_id="123",
+            source_group_name="",
+            source_user_name="",
+        ),
+    ]
+    lines = ScheduledCategoryDigestService._format_items(
+        items, max_items=len(items)
+    )
+    joined = "\n".join(lines)
+    # 第一条：显示群名和人名
+    assert "[AI搞钱群]" in joined
+    assert "夙梦:" in joined
+    # 第二条：退回 ID，无人名
+    assert "[群123]" in joined
+
+
+def test_pack_digests_text_is_full_no_truncation():
+    """pack_digests（文本）：条目数超过 12 时文本全量不截断。"""
+    svc = _service()
+    items = [
+        ValueItem(content=f"条目{i}", source_group_id="111") for i in range(20)
+    ]
+    digests = [CategoryDigest(name="科技", items=items, groups_analyzed=["111"])]
+    msgs = svc.pack_digests(digests, push_mode="split")
+    text = msgs[0]
+    # 20 条全量，不出现「已省略」
+    assert "条目19" in text
+    assert "已省略" not in text
+
+
+def test_pack_digests_payload_image_respects_configured_max():
+    """pack_digests_payload（图片）：按配置 digest_max_items_per_section 截断。"""
+    cfg = _make_cfg(digest_max_items_per_section=5)
+    svc = _service(cfg=cfg)
+    items = [
+        ValueItem(content=f"条目{i}", source_group_id="111") for i in range(20)
+    ]
+    digests = [CategoryDigest(name="科技", items=items, groups_analyzed=["111"])]
+    payloads = svc.pack_digests_payload(digests, push_mode="split")
+    section = payloads[0]["sections"][0]
+    # 图片按配置截断到 5
+    assert len(section["entries"]) == 5
+    assert section["omitted"] == 15
+
+
+def test_get_digest_max_items_per_section_defaults_and_clamps():
+    """getter 默认 15，超出范围 clamp 到 [3, 200]。"""
+    assert _make_cfg().get_digest_max_items_per_section() == 15
+    cfg_lo = _make_cfg(digest_max_items_per_section=1)
+    assert cfg_lo.get_digest_max_items_per_section() == 3
+    cfg_hi = _make_cfg(digest_max_items_per_section=99999)
+    assert cfg_hi.get_digest_max_items_per_section() == 200
+

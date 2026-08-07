@@ -421,8 +421,16 @@ class ConfigManager:
         return self._get_group("performance").get("max_concurrent_llm", 3)
 
     def get_t2i_max_concurrent(self) -> int:
-        """获取全局图片渲染（T2I）最大并发数"""
-        return self._get_group("performance").get("max_concurrent_t2i", 1)
+        """获取全局图片渲染（T2I）最大并发数。
+
+        图片渲染是 CPU/IO 密集（浏览器转图），不是 LLM 调用，
+        提到 3 不违反「不加 LLM 并发」约束，且能显著缩短多图串行等待。
+        """
+        raw = self._get_group("performance").get("max_concurrent_t2i", 3)
+        try:
+            return max(1, int(raw))
+        except (TypeError, ValueError):
+            return 3
 
     def get_stagger_seconds(self) -> int:
         """获取多群分析任务启动时的交错间隔（秒）"""
@@ -504,6 +512,77 @@ class ConfigManager:
             return "image"
         return fmt
 
+    def get_digest_max_items_per_section(self) -> int:
+        """分类摘要单张图最多展示的条目数。
+
+        仅作用于图片渲染（图片过长手机看费劲）；
+        全量文本推送不受此限制——信息完整性靠文本兜底。
+        默认 15，取值范围 [3, 200]。
+        """
+        raw = self._get_group("auto_analysis").get(
+            "digest_max_items_per_section", 15
+        )
+        try:
+            val = int(raw)
+        except (TypeError, ValueError):
+            return 15
+        return max(3, min(val, 200))
+
+    def get_digest_max_themes(self) -> int:
+        """分类日报二次聚合的主题数上限。
+
+        多群碎条目经 LLM 归并成主题叙事，控制认知负荷到 4±1 组块。
+        默认 5，取值范围 [3, 10]。
+        """
+        raw = self._get_group("auto_analysis").get("digest_max_themes", 5)
+        try:
+            val = int(raw)
+        except (TypeError, ValueError):
+            return 5
+        return max(3, min(val, 10))
+
+    def is_digest_aggregation_enabled(self) -> bool:
+        """是否开启分类日报二次聚合（关闭则回退旧的平铺拼接逻辑）。"""
+        raw = self._get_group("auto_analysis").get("digest_aggregation_enabled", True)
+        if isinstance(raw, bool):
+            return raw
+        if isinstance(raw, str):
+            return raw.strip().lower() in ("true", "1", "yes", "on")
+        return True
+
+    def is_digest_use_forward_msg(self) -> bool:
+        """是否用合并转发发送分类摘要（多条图打包成卡片，避免刷屏）。
+
+        默认 True。关闭则回退逐条发送（每张图一条消息）。
+        合并转发失败也会自动降级逐条发，此开关仅控制是否尝试合并转发。
+        """
+        raw = self._get_group("auto_analysis").get("digest_use_forward_msg", True)
+        if isinstance(raw, bool):
+            return raw
+        if isinstance(raw, str):
+            return raw.strip().lower() in ("true", "1", "yes", "on")
+        return True
+
+    def get_timeline_narrative_enabled(self) -> bool:
+        """话题分析是否走「事件脉络叙事」模式（取代平铺话题）。
+
+        默认 True——以事件为单位还原讨论脉络（起因→关键发言→结论），
+        比平铺话题的认知负荷低。关闭则回退旧的平铺话题分析。
+        调用次数不变（复用话题槽位）。
+        """
+        raw = self._get_group("auto_analysis").get(
+            "timeline_narrative_enabled", True
+        )
+        return bool(raw)
+
+    def get_max_timeline_events(self) -> int:
+        """事件脉络叙事：单群最多产出的事件数。默认 12，取值 [3, 30]。"""
+        raw = self._get_group("auto_analysis").get("max_timeline_events", 12)
+        try:
+            return max(3, min(int(raw), 30))
+        except (TypeError, ValueError):
+            return 12
+
     def get_push_categories(self) -> list:
         """解析用户分类列表，归一化为 list[PushCategory]。
 
@@ -542,6 +621,43 @@ class ConfigManager:
         if not isinstance(raw, list):
             raw = [raw]
         return [str(x).strip() for x in raw if str(x).strip()]
+
+    # ==================== 邮件推送配置 ====================
+
+    def is_digest_email_enabled(self) -> bool:
+        """分类日报是否同时发邮件。"""
+        raw = self._get_group("admin_notify").get("digest_email_enabled", False)
+        if isinstance(raw, bool):
+            return raw
+        if isinstance(raw, str):
+            return raw.strip().lower() in ("true", "1", "yes", "on")
+        return False
+
+    def get_digest_email_recipients(self) -> list[str]:
+        """邮件收件人列表。"""
+        raw = self._get_group("admin_notify").get("digest_email_recipients", [])
+        if not isinstance(raw, list):
+            raw = [raw]
+        return [str(x).strip() for x in raw if str(x).strip() and "@" in str(x)]
+
+    def get_smtp_host(self) -> str:
+        return str(self._get_group("admin_notify").get("smtp_host", "smtp.126.com")).strip()
+
+    def get_smtp_port(self) -> int:
+        try:
+            return int(self._get_group("admin_notify").get("smtp_port", 465))
+        except (TypeError, ValueError):
+            return 465
+
+    def get_smtp_username(self) -> str:
+        return str(self._get_group("admin_notify").get("smtp_username", "")).strip()
+
+    def get_smtp_auth_code(self) -> str:
+        """SMTP 授权码（不是登录密码）。"""
+        return str(self._get_group("admin_notify").get("smtp_auth_code", "")).strip()
+
+    def get_smtp_from_name(self) -> str:
+        return str(self._get_group("admin_notify").get("smtp_from_name", "群聊日报")).strip()
 
     # ==================== 实时消息监控配置 ====================
 

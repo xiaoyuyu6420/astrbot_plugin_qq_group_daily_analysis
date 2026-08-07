@@ -702,6 +702,39 @@ class OneBotAdapter(PlatformAdapter):
             file_path, do_upload, "OneBot 文件"
         )
 
+    async def send_private_file(
+        self,
+        user_id: str,
+        file_path: str,
+        filename: str | None = None,
+    ) -> bool:
+        """私聊发送文件（NapCat 支持 upload_private_file）。
+
+        用于把 Markdown/JSON 等结构化产物私聊发给管理员。
+        """
+        async def do_upload(content: str, label: str):
+            try:
+                await self.bot.call_action(
+                    "upload_private_file",
+                    user_id=int(user_id),
+                    file=content,
+                    name=filename or os.path.basename(file_path),
+                )
+            except Exception as e:
+                logger.error(
+                    f"私聊文件发送失败 ({label}, user_id={user_id}): {e}"
+                )
+                raise
+            logger.debug(f"私聊文件发送成功 ({label}): {filename or file_path}")
+
+        try:
+            return await self._execute_transmission_strategy(
+                file_path, do_upload, "私聊文件"
+            )
+        except Exception as e:
+            logger.error(f"私聊文件发送最终失败 (user_id={user_id}): {e}")
+            return False
+
     async def send_forward_msg(
         self,
         group_id: str,
@@ -731,6 +764,39 @@ class OneBotAdapter(PlatformAdapter):
             if self._is_mute_exception(e):
                 self._record_mute_status(group_id, True)
             logger.warning(f"[OneBot] 发送合并转发消息失败: {e}")
+            return False
+
+    async def send_private_forward_msg(
+        self,
+        user_id: str,
+        nodes: list[dict],
+    ) -> bool:
+        """发送私聊合并转发消息（NapCat 4.x 支持 send_private_forward_msg）。
+
+        用于分类日报等多内容场景：把多张图/多段文本打包成一条可展开的
+        合并转发卡片，避免一条条消息刷屏。失败返回 False，由调用方降级。
+        """
+        if not hasattr(self.bot, "call_action"):
+            return False
+
+        try:
+            # 兼容节点 uin/user_id（与群聊版一致）
+            for node in nodes:
+                if "data" in node:
+                    if "user_id" in node["data"] and "uin" not in node["data"]:
+                        node["data"]["uin"] = node["data"]["user_id"]
+
+            await self.bot.call_action(
+                "send_private_forward_msg",
+                user_id=int(user_id),
+                messages=nodes,
+            )
+            logger.debug(f"[OneBot] 私聊合并转发成功: user_id={user_id}")
+            return True
+        except Exception as e:
+            logger.warning(
+                f"[OneBot] 私聊合并转发失败 (user_id={user_id}): {e}"
+            )
             return False
 
     # ==================== IGroupInfoRepository 实现 ====================

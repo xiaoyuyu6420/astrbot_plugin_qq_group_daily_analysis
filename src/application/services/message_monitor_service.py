@@ -663,7 +663,7 @@ class MessageMonitorService:
             marker = ">>> " if is_target else "    "
             line = f"{marker}[{i}] [{msg['sender_id']}]: {msg['text']}"
             if total_len + len(line) > _MAX_LLM_TEXT_CHARS:
-                lines.append(f"    …(后续已截断)")
+                lines.append("    …(后续已截断)")
                 break
             lines.append(line)
             total_len += len(line)
@@ -809,7 +809,7 @@ class MessageMonitorService:
         """
         targets = self._get_alert_targets()
         if not targets:
-            logger.warning(f"[Monitor] 无推送目标（请配置 alert_admin_qqs 或 admins_id）")
+            logger.warning("[Monitor] 无推送目标（请配置 alert_admin_qqs 或 admins_id）")
             return
 
         adapter = self.bot_manager.get_adapter(platform_id) if platform_id else None

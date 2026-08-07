@@ -531,6 +531,53 @@ class AutoScheduler:
             result.get("digest_path"),
         )
 
+    async def rerender_latest_digest(self) -> dict:
+        """重渲染最新落盘的 digest 并重新发送（调试模板/发送方式用）。
+
+        复用最新 digest 数据，不重复拉消息/单群 LLM 分析。
+        """
+        from ...application.services.scheduled_category_digest_service import (
+            ScheduledCategoryDigestService,
+        )
+        from astrbot.api.star import StarTools
+        from ...shared.constants import PLUGIN_NAME
+
+        platform_id = None
+        try:
+            if (
+                hasattr(self.bot_manager, "get_platform_count")
+                and self.bot_manager.get_platform_count() == 1
+            ):
+                platform_id = self.bot_manager.get_platform_ids()[0]
+        except Exception:
+            platform_id = None
+
+        report_generator = None
+        html_render_func = self.html_render_func
+        if self.report_dispatcher is not None:
+            report_generator = getattr(self.report_dispatcher, "report_generator", None)
+            if not html_render_func:
+                html_render_func = getattr(
+                    self.report_dispatcher, "_html_render_func", None
+                )
+
+        plugin_data_dir = None
+        try:
+            plugin_data_dir = StarTools.get_data_dir(PLUGIN_NAME)
+        except Exception:
+            pass
+
+        service = ScheduledCategoryDigestService(
+            config_manager=self.config_manager,
+            analysis_service=self.analysis_service,
+            bot_manager=self.bot_manager,
+            report_dispatcher=self.report_dispatcher,
+            report_generator=report_generator,
+            html_render_func=html_render_func,
+            data_dir=plugin_data_dir,
+        )
+        return await service.rerender_and_resend_latest(platform_id=platform_id)
+
     async def _perform_auto_analysis_for_group_with_timeout(
         self, group_id: str, target_platform_id: str | None = None
     ):

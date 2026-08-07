@@ -37,7 +37,12 @@ def _is_response_format_unsupported_error(error: Exception) -> bool:
 
 def _get_circuit_breaker(provider_id: str) -> CircuitBreaker:
     if provider_id not in _circuit_breakers:
-        _circuit_breakers[provider_id] = CircuitBreaker(name=f"provider_{provider_id}", recovery_timeout=180)
+        # Phase 2 后 LLM 调用从 34 次降到 6 次，触发熔断概率大降；
+        # recovery_timeout 回调到 60s（熔断器默认值），让故障 provider
+        # 更快进入 half-open 重试，而非 180s 长时间封锁。
+        _circuit_breakers[provider_id] = CircuitBreaker(
+            name=f"provider_{provider_id}", recovery_timeout=60
+        )
     return _circuit_breakers[provider_id]
 
 

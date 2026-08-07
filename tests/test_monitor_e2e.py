@@ -5,10 +5,7 @@ e2e 测试：实时消息监控（整窗汇总模式）全流程
 不依赖真实 astrbot / LLM / OneBot，全部 mock。
 """
 
-import asyncio
 import json
-import sys
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest

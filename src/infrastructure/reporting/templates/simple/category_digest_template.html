@@ -10,49 +10,179 @@
     <style>
         body {
             font-family: {% if t2i_font_source == 'Mainland' %}'Noto Sans SC', 'Noto Sans TC'{% else %}'Noto Sans TC', 'Noto Sans SC'{% endif %}, sans-serif;
-            padding: 24px 28px;
+            padding: 18px 22px;
             margin: 0;
-            background: #fafafa;
-            color: #333;
+            background: #f5f6f8;
+            color: #2c3338;
             max-width: 720px;
+            font-size: 14px;
+            line-height: 1.5;
         }
 
         h1 {
-            font-size: 1.5em;
-            margin: 0 0 8px 0;
-            color: #222;
+            font-size: 1.35em;
+            margin: 0 0 4px 0;
+            color: #1a1a1a;
         }
 
         .subtitle {
-            color: #666;
-            font-size: 0.9em;
-            margin-bottom: 20px;
+            color: #6b7480;
+            font-size: 0.85em;
+            margin-bottom: 14px;
+            padding-bottom: 8px;
+            border-bottom: 2px solid #e3e6ea;
         }
 
-        .section {
-            margin-bottom: 18px;
-            border: 1px solid #ddd;
+        /* 主题区块 —— 聚合后认知负荷低的核心呈现（紧凑版） */
+        .theme {
+            margin-bottom: 12px;
+            border: 1px solid #e0e3e8;
             border-radius: 8px;
             background: #fff;
-            padding: 14px 16px;
+            padding: 12px 14px;
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+            break-inside: avoid;       /* 分栏时卡片不被拦腰截断 */
+            page-break-inside: avoid;  /* 老浏览器兼容 */
+        }
+
+        /* 分栏容器：themes 超过 3 个时启用双栏，压缩纵向高度 */
+        .themes-grid {
+            column-count: 2;
+            column-gap: 16px;
+        }
+        .themes-grid.single-col {
+            column-count: 1;
+        }
+
+        .theme-header {
+            display: flex;
+            align-items: baseline;
+            gap: 6px;
+            flex-wrap: wrap;
+            margin-bottom: 6px;
+        }
+
+        .theme-title {
+            font-size: 1.05em;
+            font-weight: 700;
+            color: #1a1a1a;
+            margin: 0;
+        }
+
+        .badge {
+            display: inline-block;
+            font-size: 0.68em;
+            font-weight: 600;
+            padding: 1px 6px;
+            border-radius: 4px;
+            letter-spacing: 0.3px;
+        }
+
+        .badge-high {
+            background: #fde8e8;
+            color: #c53030;
+        }
+
+        .badge-medium {
+            background: #fef3c7;
+            color: #92400e;
+        }
+
+        .badge-low {
+            background: #e8f0fe;
+            color: #3a6ea5;
+        }
+
+        .badge-tag {
+            background: #f0f1f3;
+            color: #6b7480;
+            font-weight: 400;
+        }
+
+        .narrative {
+            line-height: 1.55;
+            color: #3a4046;
+            margin: 4px 0 0 0;
+            font-size: 0.92em;
+        }
+
+        /* 关联条目（可追溯来源）—— 嵌入式引用块（紧凑） */
+        .related {
+            margin-top: 8px;
+            padding: 7px 10px;
+            background: #fafbfc;
+            border-left: 3px solid #d0d4da;
+            border-radius: 0 6px 6px 0;
+        }
+
+        .related-item {
+            margin: 4px 0;
+            font-size: 0.84em;
+            line-height: 1.45;
+            color: #4a5258;
+        }
+
+        .related-item:last-child {
+            margin-bottom: 0;
+        }
+
+        .group-tag {
+            display: inline-block;
+            background: #eef3f8;
+            color: #3a6ea5;
+            border-radius: 4px;
+            padding: 0 6px;
+            font-size: 0.9em;
+            margin-right: 4px;
+        }
+
+        .user-tag {
+            color: #8b5a9f;
+            font-weight: 600;
+            margin-right: 3px;
+        }
+
+        /* 游离条目（未被主题归并）—— 次要展示 */
+        .orphans {
+            margin-top: 6px;
+            padding-top: 8px;
+            border-top: 1px dashed #e0e3e8;
+        }
+
+        .orphans-title {
+            font-size: 0.78em;
+            color: #8b929a;
+            margin-bottom: 6px;
+        }
+
+        /* 平铺条目（降级：聚合未触发/失败时）—— 兼容旧逻辑（紧凑） */
+        .section {
+            margin-bottom: 12px;
+            border: 1px solid #e0e3e8;
+            border-radius: 8px;
+            background: #fff;
+            padding: 12px 14px;
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
         }
 
         .section h2 {
-            margin: 0 0 6px 0;
-            font-size: 1.15em;
-            color: #2c3e50;
+            margin: 0 0 4px 0;
+            font-size: 1.1em;
+            color: #1a1a1a;
         }
 
         .section .meta {
-            color: #888;
-            font-size: 0.85em;
-            margin-bottom: 10px;
+            color: #8b929a;
+            font-size: 0.82em;
+            margin-bottom: 8px;
         }
 
         .item {
-            margin: 10px 0;
-            padding-bottom: 8px;
-            border-bottom: 1px dashed #eee;
+            margin: 7px 0;
+            padding-bottom: 5px;
+            border-bottom: 1px dashed #eceef1;
+            line-height: 1.45;
+            font-size: 0.92em;
         }
 
         .item:last-child {
@@ -60,38 +190,31 @@
             padding-bottom: 0;
         }
 
-        .item .head {
-            line-height: 1.5;
-        }
-
-        .item .group-tag {
-            display: inline-block;
-            background: #eef3f8;
-            color: #3a6ea5;
-            border-radius: 4px;
-            padding: 0 6px;
-            font-size: 0.85em;
-            margin-right: 4px;
-        }
-
         .item .reason {
-            color: #888;
-            font-size: 0.88em;
-            margin-top: 4px;
+            color: #8b929a;
+            font-size: 0.85em;
+            margin-top: 3px;
             padding-left: 1.2em;
         }
 
+        .omitted-note {
+            color: #8b929a;
+            font-size: 0.8em;
+            margin-top: 8px;
+            text-align: center;
+        }
+
         .empty {
-            color: #999;
-            padding: 20px 0;
+            color: #8b929a;
+            padding: 16px 0;
             text-align: center;
         }
 
         .footer {
-            margin-top: 24px;
+            margin-top: 16px;
             padding-top: 12px;
-            border-top: 1px solid #ddd;
-            color: #888;
+            border-top: 1px solid #e3e6ea;
+            color: #8b929a;
             font-size: 0.8em;
             text-align: center;
             line-height: 1.7;
@@ -112,22 +235,83 @@
             {% if section.meta %}
             <div class="meta">{{ section.meta }}</div>
             {% endif %}
-            {% for item in section.entries %}
-            <div class="item">
-                <div class="head">
+
+            {# ── 聚合主题渲染（themes 非空时）── #}
+            {% if section.themes %}
+                {# 主题超过 3 个用双栏压缩纵向，否则单栏 #}
+                <div class="themes-grid{% if section.themes|length <= 3 %} single-col{% endif %}">
+                {% for theme in section.themes %}
+                <div class="theme">
+                    <div class="theme-header">
+                        <span class="theme-title">◉ {{ theme.title }}</span>
+                        <span class="badge badge-{{ theme.importance }}">{% if theme.importance == 'high' %}重要{% elif theme.importance == 'low' %}轻量{% else %}一般{% endif %}</span>
+                        {% for tag in theme.tags %}
+                        <span class="badge badge-tag">{{ tag }}</span>
+                        {% endfor %}
+                    </div>
+                    <div class="narrative">{{ theme.narrative }}</div>
+                    {% if theme.entries %}
+                    <div class="related">
+                        {% for item in theme.entries %}
+                        <div class="related-item">
+                            {% if item.source_group_name %}
+                            <span class="group-tag">{{ item.source_group_name }}</span>
+                            {% elif item.source_group_id %}
+                            <span class="group-tag">群{{ item.source_group_id }}</span>
+                            {% endif %}
+                            {% if item.source_user_name %}<span class="user-tag">{{ item.source_user_name }}:</span>{% endif %}
+                            {{ item.content }}
+                        </div>
+                        {% endfor %}
+                    </div>
+                    {% endif %}
+                </div>
+                {% endfor %}
+                </div>{# /themes-grid #}
+
+                {# 游离条目（未被任何主题归并的原条目，信息完整性兜底） #}
+                {% if section.orphans %}
+                <div class="orphans">
+                    <div class="orphans-title">其他未归类信息</div>
+                    <div class="themes-grid">
+                    {% for item in section.orphans %}
+                    <div class="related-item" style="break-inside: avoid;">
+                        {% if item.source_group_name %}
+                        <span class="group-tag">{{ item.source_group_name }}</span>
+                        {% elif item.source_group_id %}
+                        <span class="group-tag">群{{ item.source_group_id }}</span>
+                        {% endif %}
+                        {% if item.source_user_name %}<span class="user-tag">{{ item.source_user_name }}:</span>{% endif %}
+                        {{ item.content }}
+                    </div>
+                    {% endfor %}
+                    </div>
+                    {% if section.omitted %}
+                    <div class="omitted-note">… 另有 {{ section.omitted }} 条已省略</div>
+                    {% endif %}
+                </div>
+                {% endif %}
+
+            {# ── 降级渲染：无 themes 时回退平铺条目 ── #}
+            {% else %}
+                {% for item in section.entries %}
+                <div class="item">
                     {{ item.index }}.
-                    {% if item.source_group_id %}
+                    {% if item.source_group_name %}
+                    <span class="group-tag">{{ item.source_group_name }}</span>
+                    {% elif item.source_group_id %}
                     <span class="group-tag">群{{ item.source_group_id }}</span>
                     {% endif %}
+                    {% if item.source_user_name %}<span class="user-tag">{{ item.source_user_name }}:</span>{% endif %}
                     {{ item.content }}
+                    {% if item.reason and item.reason != '话题' %}
+                    <div class="reason">↳ {{ item.reason }}</div>
+                    {% endif %}
                 </div>
-                {% if item.reason and item.reason != '话题' %}
-                <div class="reason">↳ {{ item.reason }}</div>
+                {% endfor %}
+                {% if section.omitted %}
+                <div class="omitted-note">… 另有 {{ section.omitted }} 条已省略</div>
                 {% endif %}
-            </div>
-            {% endfor %}
-            {% if section.omitted %}
-            <div class="meta">… 另有 {{ section.omitted }} 条已省略</div>
             {% endif %}
         </div>
         {% endfor %}

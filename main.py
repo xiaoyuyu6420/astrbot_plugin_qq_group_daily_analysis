@@ -1189,3 +1189,55 @@ class GroupDailyAnalysis(Star):
                 yield event.plain_result("ℹ️ 当前群已在黑名单中")
         else:
             yield event.plain_result("ℹ️ 当前为无限制模式，如需禁用请切换到黑名单模式")
+
+    @filter.command("重渲染日报", alias={"rerender_digest"})
+    @filter.permission_type(PermissionType.ADMIN)
+    async def rerender_digest(self, event: AstrMessageEvent):
+        """重渲染最新一次分类日报并重新发送（调试模板/发送方式用）。
+
+        复用最新落盘的 digest 数据，不重复拉消息/LLM 分析。
+        用法: /重渲染日报
+        """
+        if self._terminating:
+            return
+
+        current_task = asyncio.current_task()
+        if current_task:
+            self._background_tasks.add(current_task)
+
+        try:
+            event.should_call_llm(True)
+
+            # 仅 by_category 模式有意义
+            if self.config_manager.get_delivery_mode() != "by_category":
+                yield event.plain_result("❌ 此命令仅 delivery_mode=by_category 可用")
+                return
+
+            if not self.auto_scheduler:
+                yield event.plain_result("❌ 调度器未初始化")
+                return
+
+            self.bot_manager.update_from_event(event)
+            yield event.plain_result("⏳ 正在用最新 digest 数据重渲染并重发，请稍候（约10-30秒）...")
+
+            result = await self.auto_scheduler.rerender_latest_digest()
+
+            if not result.get("success"):
+                reason = result.get("reason", "未知")
+                yield event.plain_result(f"❌ 重渲染失败: {reason}")
+                return
+
+            yield event.plain_result(
+                f"✅ 重渲染完成（数据源: {result.get('source_file', '?')}）\n"
+                f"发送: {result.get('messages_sent', 0)} 成功 / "
+                f"{result.get('message_count', 0)} 条\n"
+                f"分类: {result.get('digests_count', 0)} 个, "
+                f"主题: {result.get('themes_count', 0)} 个\n"
+                f"格式: {result.get('output_format', '?')}"
+            )
+        except Exception as e:
+            logger.error(f"重渲染日报命令异常: {e}", exc_info=True)
+            yield event.plain_result(f"❌ 重渲染异常: {e}")
+        finally:
+            if current_task:
+                self._background_tasks.discard(current_task)

@@ -22,7 +22,6 @@ from src.domain.services.intel_taxonomy import (
     CHANNEL_OTHER,
     CHANNEL_RESOURCE,
     PRIORITY_CRITICAL,
-    PRIORITY_LOW,
     PRIORITY_NORMAL,
     normalize_channel,
 )

@@ -6,10 +6,7 @@ e2e 测试：跨群聚合模式 + 降噪层集成
 - 降噪集成：keyword 模式下的优先级分级、冷却、去重、批量合并
 """
 
-import asyncio
 import json
-import sys
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest

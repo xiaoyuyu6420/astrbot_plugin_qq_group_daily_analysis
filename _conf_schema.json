@@ -18,6 +18,51 @@
                 "items": {
                     "type": "string"
                 }
+            },
+            "digest_email_enabled": {
+                "type": "bool",
+                "default": false,
+                "description": "分类日报同时发邮件",
+                "hint": "开启后，分类日报（by_category）跑完除了 QQ 私聊推送，还会用 SMTP 发一封 HTML 邮件（用户原文默认折叠，点击展开）。需配置下方 SMTP 参数。"
+            },
+            "digest_email_recipients": {
+                "type": "list",
+                "default": [],
+                "description": "邮件收件人列表",
+                "hint": "分类日报邮件发给谁。填邮箱地址，例如 [\"672178818@qq.com\", \"test@example.com\"]。",
+                "items": {
+                    "type": "string"
+                }
+            },
+            "smtp_host": {
+                "type": "string",
+                "default": "smtp.126.com",
+                "description": "SMTP 服务器地址",
+                "hint": "发件邮箱的 SMTP 服务器。126邮箱: smtp.126.com，QQ邮箱: smtp.qq.com，Gmail: smtp.gmail.com，163邮箱: smtp.163.com。"
+            },
+            "smtp_port": {
+                "type": "int",
+                "default": 465,
+                "description": "SMTP 端口",
+                "hint": "SSL 直连用 465（推荐），STARTTLS 用 587。默认 465。"
+            },
+            "smtp_username": {
+                "type": "string",
+                "default": "",
+                "description": "SMTP 发件邮箱",
+                "hint": "发件邮箱地址，例如 wbq20040526@126.com。注意：邮箱后台需开启 SMTP 服务并生成授权码。"
+            },
+            "smtp_auth_code": {
+                "type": "string",
+                "default": "",
+                "description": "SMTP 授权码",
+                "hint": "邮箱后台生成的授权码（不是登录密码）。126/QQ邮箱：设置→POP3/SMTP→开启服务→生成授权码。Gmail 用应用专用密码。"
+            },
+            "smtp_from_name": {
+                "type": "string",
+                "default": "群聊日报",
+                "description": "发件人显示名",
+                "hint": "收件人看到的发件人名称，默认「群聊日报」。"
             }
         }
     },
@@ -66,6 +111,42 @@
                 ],
                 "default": "image",
                 "hint": "仅 delivery_mode=by_category 生效。\nimage（默认）= 分类摘要渲染为图片后私聊管理员，失败自动回退文本。\ntext = 直接发纯文本摘要。\n与 basic.output_format（控制 per_group 群发格式）相互独立。"
+            },
+            "digest_max_items_per_section": {
+                "type": "int",
+                "description": "【分类聚合】单张图最多展示条目数",
+                "default": 15,
+                "hint": "仅图片渲染生效（图片过长手机看费劲）。默认 15，取值 3~200。\n全量文本推送不受此限制——信息完整性靠文本兜底，图片只放精选。\n开启二次聚合后此值主要用于判断「条目数超过多少时触发聚合」。"
+            },
+            "digest_aggregation_enabled": {
+                "type": "bool",
+                "description": "【分类聚合·核心】多群碎条目二次 LLM 聚合",
+                "default": true,
+                "hint": "开启（默认）= 多群各自抽取的碎条目经二次 LLM 归并成 3-5 个主题叙事（每个主题挂关联原条目，可追溯），解决「折叠 69 条」式认知过载。\n关闭 = 回退旧的平铺拼接逻辑（多群结果去重后直接平铺）。\n仅条目数超过 digest_max_items_per_section 时才触发聚合（少量条目直接平铺，省 LLM 成本）。"
+            },
+            "digest_max_themes": {
+                "type": "int",
+                "description": "【分类聚合】聚合主题数上限",
+                "default": 5,
+                "hint": "仅 digest_aggregation_enabled=true 生效。多群碎条目归并成几个主题叙事，控制认知负荷到 4±1 组块。默认 5，取值 3~10。"
+            },
+            "digest_use_forward_msg": {
+                "type": "bool",
+                "description": "【分类聚合】合并转发发送（避免刷屏）",
+                "default": true,
+                "hint": "开启（默认）= 多个分类图打包成一条合并转发卡片，点开依次看，避免一张张刷屏。\n关闭 = 逐条发送（每个分类一条消息，旧行为）。\n合并转发失败会自动降级为逐条发送，不影响到达。需 NapCat/OneBot 后端支持 send_private_forward_msg。"
+            },
+            "timeline_narrative_enabled": {
+                "type": "bool",
+                "description": "【质量·核心】话题分析走事件脉络叙事",
+                "default": true,
+                "hint": "开启（默认）= 话题分析改为「事件脉络叙事」：以事件为单位还原讨论（起因→关键发言→结论），带重要性排序，比平铺话题更易读。调用次数不变（复用话题槽位）。\n关闭 = 回退旧的平铺话题分析。质量改造核心项，建议保持开启。"
+            },
+            "max_timeline_events": {
+                "type": "int",
+                "description": "【质量】事件脉络：单群最多产出事件数",
+                "default": 12,
+                "hint": "仅 timeline_narrative_enabled=true 生效。每个群最多提取几个事件叙事，控制信息密度。默认 12，取值 3~30。"
             },
             "categories": {
                 "type": "text",
@@ -364,8 +445,8 @@
             "max_concurrent_t2i": {
                 "type": "int",
                 "description": "最大 T2I渲染并发数",
-                "default": 1,
-                "hint": "限制同时开启的 T2I 渲染进程数。"
+                "default": 3,
+                "hint": "限制同时开启的 T2I 渲染进程数。默认 3（图片渲染是 CPU/IO 非 LLM，提到 3 能显著缩短多图串行等待，不影响 LLM 调用频率）。"
             },
             "stagger_seconds": {
                 "type": "int",

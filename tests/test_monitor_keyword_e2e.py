@@ -5,8 +5,6 @@ e2e 测试：关键词即时推送模式（monitor_mode=keyword）
 """
 
 import json
-import sys
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest

@@ -11,7 +11,6 @@ sys.modules mock，确保真实 astrbot 被导入。
 注意：运行需要 `pip install astrbot ulid-py diskcache`
 """
 
-import os
 import sys
 from pathlib import Path
 

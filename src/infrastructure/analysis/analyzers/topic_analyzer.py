@@ -323,6 +323,14 @@ class TopicAnalyzer(BaseAnalyzer[SummaryTopic, list[dict]]):
             (话题列表, Token使用统计)
         """
         try:
+            # 事件叙事模式：委托给 TimelineAnalyzer，把事件脉络适配回话题格式。
+            # 调用次数不变（仍走话题槽位），但产出从「平铺话题」变成「事件叙事」，
+            # 下游（digest service / 渲染）完全无感——仍是 SummaryTopic。
+            if self._use_timeline_narrative():
+                return await self._analyze_as_timeline(
+                    messages, umo, session_id
+                )
+
             logger.debug(
                 f"analyze_topics 开始处理，消息数量: {len(messages) if messages else 0}"
             )
@@ -390,3 +398,78 @@ class TopicAnalyzer(BaseAnalyzer[SummaryTopic, list[dict]]):
         except Exception as e:
             logger.error(f"话题分析失败: {e}", exc_info=True)
             return [], TokenUsage()
+
+    def _use_timeline_narrative(self) -> bool:
+        """是否启用事件脉络叙事模式（取代平铺话题）。
+
+        默认 True——事件叙事以「事件」为单位还原脉络（起因→关键发言→结论），
+        比平铺话题的认知负荷低（schema theory：框架先行）。失败可配置切回旧话题。
+        """
+        getter = getattr(self.config_manager, "get_timeline_narrative_enabled", None)
+        if callable(getter):
+            try:
+                return bool(getter())
+            except Exception:
+                pass
+        return True
+
+    async def _analyze_as_timeline(
+        self,
+        messages: list[dict],
+        umo: str | None,
+        session_id: str | None,
+    ) -> tuple[list[SummaryTopic], TokenUsage]:
+        """事件叙事模式：TimelineAnalyzer 产出 TimelineEvent → 适配回 SummaryTopic。
+
+        适配映射：
+          title       → topic（事件标题）
+          narrative   → detail（脉络叙事，下游当 detail 消费）
+          participants→ contributors / contributor_ids
+        调用次数不变（复用话题槽位），下游零感知。
+        """
+        # 延迟导入避免循环依赖
+        from .timeline_analyzer import TimelineAnalyzer
+
+        timeline = TimelineAnalyzer(self.context, self.config_manager)
+        events, usage = await timeline.analyze(messages, umo, session_id)
+
+        # ID→昵称映射（与原 analyze_topics 一致，用于 contributors 显示）
+        text_messages = self.extract_text_messages(messages)
+        id_to_nickname = {
+            m.get("user_id"): m.get("sender")
+            for m in text_messages
+            if m.get("user_id") and m.get("sender")
+        }
+        bot_ids = self.config_manager.get_bot_self_ids()
+
+        topics: list[SummaryTopic] = []
+        for ev in events:
+            valid_ids = [
+                uid
+                for uid in ev.participants
+                if str(uid).strip().isdigit()
+            ]
+            resolved_names = []
+            for uid in valid_ids:
+                name = id_to_nickname.get(uid)
+                if not name:
+                    name = "Bot" if uid in bot_ids else uid
+                resolved_names.append(name)
+            # 叙事前置重要性标记，让下游/读者一眼分轻重
+            prefix = {"high": "🔥 ", "medium": "▸ ", "low": "· "}.get(
+                ev.importance, ""
+            )
+            topics.append(
+                SummaryTopic(
+                    topic=prefix + ev.title,
+                    contributors=resolved_names[:5],
+                    detail=ev.narrative,
+                    contributor_ids=valid_ids[:5],
+                )
+            )
+
+        logger.info(
+            f"事件脉络分析完成，产出 {len(topics)} 个事件（已适配为话题格式）"
+        )
+        return topics, usage
+

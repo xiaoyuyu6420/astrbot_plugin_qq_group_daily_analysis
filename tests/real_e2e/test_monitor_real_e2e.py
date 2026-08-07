@@ -10,11 +10,9 @@
 运行前提：pip install astrbot ulid-py diskcache pytest pytest-asyncio
 """
 
-import asyncio
-import json
 import sys
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 

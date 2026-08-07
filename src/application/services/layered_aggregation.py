@@ -11,12 +11,10 @@ ChannelPacker: split/merged 打成推送文案（Phase 2: 单条超长分页）
 from __future__ import annotations
 
 import asyncio
-import json
 import re
-import time
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Any, Iterable
+from typing import Iterable
 
 from ...domain.entities.intel_item import IntelItem
 from ...domain.services.intel_taxonomy import (

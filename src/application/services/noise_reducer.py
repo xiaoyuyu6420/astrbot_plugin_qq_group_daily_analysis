@@ -302,7 +302,7 @@ class NoiseReducer:
                 lines.append(f"   💡 {reason}")
             lines.append(f"   📝 {content_display}")
 
-        lines.append(f"\n━━━━━━━━━━━━━")
+        lines.append("\n━━━━━━━━━━━━━")
         lines.append(f"⏰ {_tz_now().strftime('%Y-%m-%d %H:%M:%S')}")
         return "\n".join(lines)
 
