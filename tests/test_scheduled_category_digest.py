@@ -111,6 +111,86 @@ def test_pack_all_empty_returns_overview():
     assert "未提取到有价值信息" in msgs[0]
 
 
+def test_pack_all_empty_with_llm_error_reports_failure():
+    """全空 + LLM 探活失败 → 文本必须显式报 LLM 故障，而非伪装「未提取到信息」。
+
+    线上事故：Provider 402（未订购）持续一周，日报每天说「未提取到有价值信息」，
+    误导排障方向。此测试锁定该修复不被回退。
+    """
+    svc = _service()
+    digests = [
+        CategoryDigest(
+            name="技术/AI", items=[], groups_analyzed=["1", "2"], groups_skipped=[]
+        ),
+    ]
+    err = "Provider 移动云/glm-5.1 调用失败: Error code: 402 - subscription_required"
+    msgs = svc.pack_digests(
+        digests, push_mode="split", date_str="2026-08-14", llm_error=err
+    )
+    assert len(msgs) == 1
+    assert "LLM 分析失败" in msgs[0]
+    assert "402" in msgs[0]
+    assert "subscription_required" in msgs[0]
+    assert "未提取到有价值信息" not in msgs[0]
+
+
+def test_pack_payload_all_empty_with_llm_error_carries_field():
+    """图片渲染 payload 也带 llm_error，模板据此显示警告 banner。"""
+    svc = _service()
+    digests = [
+        CategoryDigest(name="技术/AI", items=[], groups_analyzed=["1"]),
+    ]
+    payloads = svc.pack_digests_payload(
+        digests, push_mode="split", date_str="2026-08-14", llm_error="Error code: 402"
+    )
+    assert len(payloads) == 1
+    assert payloads[0]["llm_error"] == "Error code: 402"
+    assert "LLM 分析失败" in payloads[0]["sections"][0]["meta"]
+
+    # 无错误时不携带警告字段值
+    payloads_ok = svc.pack_digests_payload(
+        digests, push_mode="split", date_str="2026-08-14", llm_error=None
+    )
+    assert payloads_ok[0]["llm_error"] == ""
+    assert "未提取到有价值信息" in payloads_ok[0]["sections"][0]["meta"]
+
+
+def test_pack_markdown_email_html_empty_with_llm_error():
+    """Markdown 与邮件 HTML 的空结果路径同样要透出 LLM 故障。"""
+    svc = _service()
+    digests = [CategoryDigest(name="技术/AI", items=[], groups_analyzed=["1"])]
+    md = svc.pack_digests_markdown(
+        digests, push_mode="split", date_str="2026-08-14", llm_error="Error code: 402"
+    )
+    assert "LLM 分析失败" in md[0][1]
+
+    html = svc.pack_digests_email_html(
+        digests, push_mode="split", date_str="2026-08-14", llm_error="Error code: 402"
+    )
+    assert "LLM 分析失败" in html[0][1]
+
+
+def test_non_retryable_llm_error_detected():
+    """402/401/订阅类错误应被识别为不可重试；网络超时不在此列。"""
+    from src.infrastructure.analysis.utils.llm_utils import (
+        _is_non_retryable_llm_error,
+    )
+
+    assert _is_non_retryable_llm_error(
+        Exception("Error code: 402 - {'error': {'code': 'subscription_required'}}")
+    )
+    assert _is_non_retryable_llm_error(
+        Exception("Error code: 401 - invalid_api_key")
+    )
+    assert _is_non_retryable_llm_error(
+        Exception("Model 'x' has reached its end of life on 2026-08-07")
+    )
+    assert not _is_non_retryable_llm_error(Exception("Connection reset by peer"))
+    assert not _is_non_retryable_llm_error(
+        Exception("Error code: 429 - rate limit exceeded")
+    )
+
+
 def test_value_item_fingerprint_dedup_key():
     a = ValueItem(content="同一 内容")
     b = ValueItem(content="同一内容")

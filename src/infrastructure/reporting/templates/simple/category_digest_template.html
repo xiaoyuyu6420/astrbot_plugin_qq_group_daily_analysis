@@ -210,6 +210,17 @@
             text-align: center;
         }
 
+        .llm-error {
+            background: #fce8e6;
+            border-left: 4px solid #d93025;
+            border-radius: 4px;
+            color: #a50e0e;
+            padding: 10px 14px;
+            margin: 12px 0;
+            font-size: 0.92em;
+            line-height: 1.7;
+        }
+
         .footer {
             margin-top: 16px;
             padding-top: 12px;
@@ -225,6 +236,14 @@
 <body>
     <h1>{{ title }}</h1>
     <div class="subtitle">{{ date_str }}{% if overall_meta %} · {{ overall_meta }}{% endif %}</div>
+
+    {% if llm_error %}
+    <div class="llm-error">
+        <b>⚠️ LLM 分析失败，本次结果不可信。</b><br>
+        请检查 AstrBot Provider 配置/额度。<br>
+        失败原因：{{ llm_error }}
+    </div>
+    {% endif %}
 
     {% if sections %}
         {% for section in sections %}

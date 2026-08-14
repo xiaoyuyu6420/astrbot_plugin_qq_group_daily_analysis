@@ -35,6 +35,41 @@ def _is_response_format_unsupported_error(error: Exception) -> bool:
     return any(pattern in text for pattern in patterns)
 
 
+# 业务性错误（重试无意义）：认证/额度/订阅/模型下线类。
+# 与网络抖动、429 限流区分——后者值得退避重试，前者换时间也不会自愈。
+_NON_RETRYABLE_ERROR_PATTERNS = [
+    "error code: 401",
+    "error code: 402",
+    "error code: 403",
+    "error code: 404",
+    "error code: 410",
+    "status_code: 401",
+    "status_code: 402",
+    "status_code: 403",
+    "status_code: 404",
+    "status_code: 410",
+    "subscription_required",
+    "invalid_api_key",
+    "api key not valid",
+    "insufficient_quota",
+    "model_not_found",
+    "has reached its end of life",
+    "authentication_error",
+    "permission_error",
+    "not_found_error",
+]
+
+
+def _is_non_retryable_llm_error(error: Exception) -> bool:
+    """判断是否为不可重试的业务性错误（401/402/403/404/410 等）。
+
+    这类错误重试只会浪费时间（实测 402 曾拖满 8 轮退避 ≈ 20 分钟），
+    且会刷屏日志掩盖真正原因。
+    """
+    text = str(error).lower()
+    return any(pattern in text for pattern in _NON_RETRYABLE_ERROR_PATTERNS)
+
+
 def _get_circuit_breaker(provider_id: str) -> CircuitBreaker:
     if provider_id not in _circuit_breakers:
         # Phase 2 后 LLM 调用从 34 次降到 6 次，触发熔断概率大降；
@@ -376,6 +411,15 @@ async def call_provider_with_retry(
                     last_exc = inner_e
 
             logger.warning(f"{prefix}请求失败: {last_exc}")
+
+            # 业务性错误（402 未订购 / 401 key 失效 / 模型下线等）重试无意义，
+            # 快速失败：熔断器已计数，直接耗尽队列，省掉数轮退避等待。
+            if _is_non_retryable_llm_error(last_exc):
+                logger.error(
+                    f"{prefix}业务性错误（认证/额度/订阅类），不再重试: {last_exc}"
+                )
+                break
+
             # 惰性降级：仅当所有 primary provider 的重试都耗尽后才 resolve 并注入 fallback
             if not is_fallback and i == retries - 1 and needs_fallback:
                 fallback_provider_id = await get_provider_id_with_fallback(
@@ -472,3 +516,51 @@ def extract_response_text(response) -> str:
     except Exception as e:
         logger.error(f"提取响应文本失败: {e}")
         return ""
+
+
+async def probe_llm_health(
+    context: Context,
+    config_manager: ConfigManager,
+    umo: str | None = None,
+) -> tuple[bool, str]:
+    """轻量探活：向当前 Provider 发一次极小请求，判断 LLM 链路是否可用。
+
+    用途：分析结果全空时区分两种情况——
+    - LLM 挂了（402 未订购 / key 失效 / 熔断）→ 上层应显式报错，而非「未提取到信息」
+    - LLM 正常但确实没内容 → 正常输出空日报
+
+    单次调用不重试（call_provider_with_retry 内部已有重试，这里只需要判活），
+    任何异常都吞掉并转成 (False, 原因)。
+
+    Returns:
+        (是否健康, 失败原因摘要)
+    """
+    try:
+        provider_id = await get_provider_id_with_fallback(
+            context, config_manager, None, umo
+        )
+        if not provider_id:
+            return False, "无可用 LLM Provider（检查 AstrBot Provider 配置）"
+
+        cb = _get_circuit_breaker(provider_id)
+        if not cb.allow_request():
+            return (
+                False,
+                f"Provider {provider_id} 熔断器打开（近期连续失败，多为认证/额度问题）",
+            )
+
+        try:
+            resp = await context.llm_generate(
+                chat_provider_id=provider_id, prompt="回复两个字：正常"
+            )
+        except Exception as e:
+            cb.record_failure()
+            return False, f"Provider {provider_id} 调用失败: {str(e)[:150]}"
+
+        if resp is None:
+            cb.record_failure()
+            return False, f"Provider {provider_id} 返回空响应"
+        cb.record_success()
+        return True, ""
+    except Exception as e:
+        return False, f"探活异常: {str(e)[:150]}"

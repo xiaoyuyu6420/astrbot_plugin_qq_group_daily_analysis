@@ -182,7 +182,16 @@ class ScheduledCategoryDigestService:
             )
             digests.append(digest)
 
-        text_messages = self.pack_digests(digests, push_mode=push_mode)
+        # 结果全空时探活 LLM：区分「LLM 挂了」和「确实没内容」。
+        # 此前 LLM 全挂（如 402 未订购）会伪装成「未提取到有价值信息」，
+        # 误导排障方向（以为是登录/插件问题）。
+        llm_error: str | None = None
+        if digests and all(not d.items for d in digests):
+            llm_error = await self._probe_llm(platform_id)
+
+        text_messages = self.pack_digests(
+            digests, push_mode=push_mode, llm_error=llm_error
+        )
         if not text_messages:
             logger.info(f"[{trace_id}] 分类聚合无有效内容，不推送")
             return {
@@ -196,7 +205,7 @@ class ScheduledCategoryDigestService:
         deliveries: list[tuple[str | None, str]] = []
         if output_format == "image":
             deliveries = await self._render_image_deliveries(
-                digests, text_messages, push_mode=push_mode
+                digests, text_messages, push_mode=push_mode, llm_error=llm_error
             )
         else:
             deliveries = [(None, msg) for msg in text_messages]
@@ -204,7 +213,9 @@ class ScheduledCategoryDigestService:
         # 预打包 Markdown：合并转发开启时作为文本节点塞进卡片（不单独发文件），
         # 合并转发未开启时由 _send_md_via_qq 单独发 .md 文件兜底
         try:
-            md_contents = self.pack_digests_markdown(digests, push_mode=push_mode)
+            md_contents = self.pack_digests_markdown(
+                digests, push_mode=push_mode, llm_error=llm_error
+            )
         except Exception as e:
             logger.warning(f"[{trace_id}] Markdown 打包失败: {e}")
             md_contents = []
@@ -215,7 +226,9 @@ class ScheduledCategoryDigestService:
         # Markdown 文件推送（合并转发已带走 md 时跳过 QQ 文件；邮件照发）
         md_sent = await self._send_markdown_files(digests, push_mode, platform_id)
         # 落盘：把本次 digest 存到磁盘，失败也不影响推送结果
-        digest_path = await self._persist_digests(digests, deliveries, sent)
+        digest_path = await self._persist_digests(
+            digests, deliveries, sent, llm_error=llm_error
+        )
         # 清理过期文件
         self._cleanup_old_digests()
         return {
@@ -227,15 +240,49 @@ class ScheduledCategoryDigestService:
             "digest_path": digest_path,
         }
 
+    async def _probe_llm(self, platform_id: str | None) -> str | None:
+        """结果全空时对 LLM 链路探活。返回错误摘要（None=健康）。
+
+        从 analysis_service.llm_analyzer.context 取 AstrBot 上下文
+        （与 _build_theme_analyzer 同一装配路径），取不到则无法探活，
+        返回 None 不影响正常输出。
+        """
+        trace_id = TraceContext.get()
+        try:
+            llm_analyzer = getattr(self.analysis_service, "llm_analyzer", None)
+            context = getattr(llm_analyzer, "context", None)
+            if context is None or self.config_manager is None:
+                logger.warning(
+                    f"[{trace_id}] 无法获取 LLM 上下文，跳过探活"
+                )
+                return None
+
+            from ...infrastructure.analysis.utils.llm_utils import probe_llm_health
+
+            ok, reason = await probe_llm_health(
+                context, self.config_manager, umo=None
+            )
+            if not ok:
+                logger.error(f"[{trace_id}] ⚠️ 分析全空且 LLM 探活失败: {reason}")
+                return reason
+            logger.info(f"[{trace_id}] LLM 探活正常，全空为真实无内容")
+            return None
+        except Exception as e:
+            logger.warning(f"[{trace_id}] LLM 探活异常（不影响输出）: {e}")
+            return None
+
     async def _render_image_deliveries(
         self,
         digests: list[CategoryDigest],
         text_messages: list[str],
         push_mode: str,
+        llm_error: str | None = None,
     ) -> list[tuple[str | None, str]]:
         """按 payload 渲染图片，失败则对应位置 image_url 为 None（走文本兜底）。"""
         trace_id = TraceContext.get()
-        payloads = self.pack_digests_payload(digests, push_mode=push_mode)
+        payloads = self.pack_digests_payload(
+            digests, push_mode=push_mode, llm_error=llm_error
+        )
         # pack_digests 在全空时返回 1 条总览，payload 也可能 1 条；对齐长度
         if len(payloads) != len(text_messages):
             logger.warning(
@@ -778,6 +825,7 @@ class ScheduledCategoryDigestService:
         digests: list[CategoryDigest],
         push_mode: str = "split",
         date_str: str | None = None,
+        llm_error: str | None = None,
     ) -> list[str]:
         """打包成待推送文本列表。"""
         date_str = date_str or _tz_now().strftime("%Y-%m-%d")
@@ -791,8 +839,14 @@ class ScheduledCategoryDigestService:
             empty_lines = [
                 f"📋 分类日报 {date_str}",
                 "",
-                "今日各分类未提取到有价值信息。",
             ]
+            if llm_error:
+                empty_lines.append(
+                    f"⚠️ LLM 分析失败，本次结果不可信，请检查 Provider 配置/额度。\n"
+                    f"失败原因：{llm_error}"
+                )
+            else:
+                empty_lines.append("今日各分类未提取到有价值信息。")
             for d in digests:
                 empty_lines.append(
                     f"- {d.name}：分析 {len(d.groups_analyzed)} 群 / 跳过 {len(d.groups_skipped)}"
@@ -827,6 +881,7 @@ class ScheduledCategoryDigestService:
         digests: list[CategoryDigest],
         push_mode: str = "split",
         date_str: str | None = None,
+        llm_error: str | None = None,
     ) -> list[tuple[str, str]]:
         """打包成 Markdown 内容列表。
 
@@ -842,7 +897,15 @@ class ScheduledCategoryDigestService:
 
         non_empty = [d for d in digests if d.items]
         if not non_empty:
-            md = f"# 分类日报 {date_str}\n\n今日各分类未提取到有价值信息。\n"
+            if llm_error:
+                md = (
+                    f"# 分类日报 {date_str}\n\n"
+                    f"> ⚠️ **LLM 分析失败，本次结果不可信，请检查 Provider 配置/额度。**\n"
+                    f">\n"
+                    f"> 失败原因：{llm_error}\n"
+                )
+            else:
+                md = f"# 分类日报 {date_str}\n\n今日各分类未提取到有价值信息。\n"
             return [(f"分类日报_{date_str}.md", md)]
 
         if mode == "merged":
@@ -886,6 +949,7 @@ class ScheduledCategoryDigestService:
         digests: list[CategoryDigest],
         push_mode: str = "split",
         date_str: str | None = None,
+        llm_error: str | None = None,
     ) -> list[tuple[str, str]]:
         """打包成邮箱友好的 HTML 列表（带 <details> 折叠交互）。
 
@@ -903,12 +967,24 @@ class ScheduledCategoryDigestService:
 
         non_empty = [d for d in digests if d.items]
         if not non_empty:
+            if llm_error:
+                body = (
+                    f"<h1>分类日报 {date_str}</h1>"
+                    f'<div style="border-left:4px solid #d93025;background:#fce8e6;'
+                    f'padding:10px 14px;border-radius:4px;">'
+                    f"<b>⚠️ LLM 分析失败，本次结果不可信。</b><br>"
+                    f"请检查 AstrBot Provider 配置/额度。<br>"
+                    f"失败原因：{_esc(llm_error)}"
+                    f"</div>"
+                )
+            else:
+                body = (
+                    f"<h1>分类日报 {date_str}</h1>"
+                    "<p>今日各分类未提取到有价值信息。</p>"
+                )
             return [(
                 f"分类日报_{date_str}.html",
-                self._email_wrapper(
-                    f"<h1>分类日报 {date_str}</h1><p>今日各分类未提取到有价值信息。</p>",
-                    date_str,
-                ),
+                self._email_wrapper(body, date_str),
             )]
 
         def _build_category_html(d: CategoryDigest) -> str:
@@ -1194,6 +1270,7 @@ hr {{ border:none; border-top:1px solid #e3e6ea; margin:20px 0; }}
         digests: list[CategoryDigest],
         push_mode: str = "split",
         date_str: str | None = None,
+        llm_error: str | None = None,
     ) -> list[dict[str, Any]]:
         """打包成图片模板渲染载荷列表（与 pack_digests 条数语义对齐）。"""
         date_str = date_str or _tz_now().strftime("%Y-%m-%d")
@@ -1209,15 +1286,26 @@ hr {{ border:none; border-top:1px solid #e3e6ea; margin:20px 0; }}
                 f"{d.name}：分析 {len(d.groups_analyzed)} 群 / 跳过 {len(d.groups_skipped)}"
                 for d in digests
             ]
+            overall_meta = (
+                f"LLM 分析失败：{llm_error}"
+                if llm_error
+                else "今日无价值信息"
+            )
+            meta_line = (
+                "⚠️ LLM 分析失败，本次结果不可信，请检查 Provider 配置/额度。"
+                if llm_error
+                else "今日各分类未提取到有价值信息。"
+            )
             return [
                 {
                     "title": f"分类日报 {date_str}",
                     "date_str": date_str,
-                    "overall_meta": "今日无价值信息",
+                    "overall_meta": overall_meta,
+                    "llm_error": llm_error or "",
                     "sections": [
                         {
                             "category_name": "",
-                            "meta": "今日各分类未提取到有价值信息。",
+                            "meta": meta_line,
                             "entries": [
                                 {
                                     "index": i,
@@ -1753,6 +1841,7 @@ hr {{ border:none; border-top:1px solid #e3e6ea; margin:20px 0; }}
         digests: list[CategoryDigest],
         deliveries: list[tuple[str | None, str]],
         sent_count: int,
+        llm_error: str | None = None,
     ) -> str | None:
         """持久化 digest 数据到磁盘，用于重渲染/重推。
 
@@ -1760,6 +1849,7 @@ hr {{ border:none; border-top:1px solid #e3e6ea; margin:20px 0; }}
             digests: 分类摘要列表
             deliveries: (image_url|None, text) 元组列表
             sent_count: 成功发送数量
+            llm_error: 结果全空时的 LLM 探活失败原因（None=正常）
 
         Returns:
             落盘文件路径，失败返回 None
@@ -1773,6 +1863,7 @@ hr {{ border:none; border-top:1px solid #e3e6ea; margin:20px 0; }}
             # 序列化 digests（含 themes，供重渲染/重推复用）
             digest_data = {
                 "timestamp": _tz_now().isoformat(),
+                "llm_error": llm_error,
                 "digests": [
                     {
                         "name": d.name,
