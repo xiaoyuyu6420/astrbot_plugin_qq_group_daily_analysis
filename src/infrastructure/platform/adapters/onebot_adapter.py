@@ -799,6 +799,36 @@ class OneBotAdapter(PlatformAdapter):
             )
             return False
 
+    async def get_forward_msg(self, message_id: str | int) -> dict | None:
+        """拉取合并转发消息的内容（OneBot get_forward_msg）。
+
+        用于消息监控：转发聊天记录里的文本不在事件里，要调此 API 才能拿到
+        转发包内每条子消息的内容（含可能藏在里面的 sk 密钥）。
+
+        Args:
+            message_id: 转发消息的 resId / message_id
+
+        Returns:
+            OneBot 返回的字典（含 messages 数组），失败/超时返回 None
+        """
+        if not hasattr(self.bot, "call_action"):
+            return None
+        try:
+            # 超时 8s，防止接口无限挂起（转发包可能很大）
+            result = await asyncio.wait_for(
+                self.bot.call_action("get_forward_msg", message_id=message_id),
+                timeout=8.0,
+            )
+            return result
+        except asyncio.TimeoutError:
+            logger.warning(f"[OneBot] get_forward_msg 超时: message_id={message_id}")
+            return None
+        except Exception as e:
+            logger.warning(
+                f"[OneBot] get_forward_msg 失败 (message_id={message_id}): {e}"
+            )
+            return None
+
     # ==================== IGroupInfoRepository 实现 ====================
 
     async def get_group_info(self, group_id: str) -> UnifiedGroup | None:

@@ -716,6 +716,14 @@ class ConfigManager:
         """每个批次是否用 LLM 提取有价值信息"""
         return bool(self._get_group("message_monitor").get("use_llm_confirm", True))
 
+    def is_verify_sk_real_enabled(self) -> bool:
+        """sk 命中后是否联网验证有效性（默认关闭）。
+
+        开启后命中 sk- 密钥会调 OpenAI /v1/models + 消息里的网址验真。
+        ⚠️ 服务器 IP 会被对方 key 后台记录，默认关。
+        """
+        return bool(self._get_group("message_monitor").get("verify_sk_real", False))
+
     def get_flush_interval(self) -> int:
         """批量汇总间隔（分钟）。每隔这么久把积攒的消息总结推送一次。"""
         try:
@@ -773,6 +781,40 @@ class ConfigManager:
             return max(0, val)
         except (TypeError, ValueError):
             return 60
+
+    # ------------------------------------------------------------------
+    # SK 聚合网关（sk_gateway 组）
+    # ------------------------------------------------------------------
+
+    def is_sk_gateway_enabled(self) -> bool:
+        """是否启用 SK 聚合网关（把监控到的 key 聚合成 OpenAI 兼容接口）。"""
+        return bool(self._get_group("sk_gateway").get("gateway_enabled", False))
+
+    def get_sk_gateway_host(self) -> str:
+        """网关监听地址（默认 0.0.0.0 全接口）。"""
+        return str(self._get_group("sk_gateway").get("gateway_host", "0.0.0.0"))
+
+    def get_sk_gateway_port(self) -> int:
+        """网关监听端口（默认 6187）。"""
+        try:
+            val = int(self._get_group("sk_gateway").get("gateway_port", 6187))
+            return max(1, min(65535, val))
+        except (TypeError, ValueError):
+            return 6187
+
+    def get_sk_gateway_master_key(self) -> str:
+        """网关 master key（Bearer 鉴权）。为空则网关不启动。"""
+        return str(
+            self._get_group("sk_gateway").get("gateway_master_key", "") or ""
+        ).strip()
+
+    def get_sk_pool_max(self) -> int:
+        """SK 池容量上限，超出滚动淘汰最旧。"""
+        try:
+            val = int(self._get_group("sk_gateway").get("sk_pool_max", 200))
+            return max(10, val)
+        except (TypeError, ValueError):
+            return 200
 
     # ==================== 分层聚合 / 分类频道 ====================
 

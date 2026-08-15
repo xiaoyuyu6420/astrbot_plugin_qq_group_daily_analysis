@@ -178,6 +178,8 @@ class MessageMonitorService:
         self.context = context
         self.config_manager = config_manager
         self.bot_manager = bot_manager
+        # SK 聚合池（由 main.py 注入，与网关共享同一实例；未装配时为 None）
+        self.sk_pool = None
 
         # 缓冲区: {group_id: [ {"text", "time", "sender_id", "name", "platform_id"} ]}
         # 攒群里所有人的消息（不仅目标 QQ），让 LLM 有完整上下文
@@ -320,6 +322,13 @@ class MessageMonitorService:
                 sk_analysis = await self._analyze_sk_hit(sender_id, sender_name, text)
                 source_url = (sk_analysis or {}).get("source_url") or None
                 verify_result = await self._verify_sk_real(text, source_url)
+                # 写入 SK 聚合池（网关数据源）；失败不影响推送
+                try:
+                    await self._harvest_sk_to_pool(
+                        text, source_url, group_id, sender_id
+                    )
+                except Exception as e:
+                    logger.warning(f"[Monitor-KW] SK 入池失败: {e}")
             await self._push_keyword_alert(
                 sender_id=sender_id,
                 sender_name=sender_name,
@@ -397,6 +406,32 @@ class MessageMonitorService:
         except Exception as e:
             logger.warning(f"[Monitor-KW] LLM 确认失败，降级为命中即推: {e}")
             return None
+
+    async def _harvest_sk_to_pool(
+        self,
+        text: str,
+        source_url: str | None,
+        group_id: str,
+        sender_id: str,
+    ) -> None:
+        """把消息里的 sk- 密钥写入聚合池（网关数据源）。
+
+        懒验证：不主动联网验真（避免服务器 IP 被外部 key 后台记录），
+        有效性由网关转发时懒判定。同一消息多个 key 全部入池。
+        """
+        pool = self.sk_pool
+        if pool is None:
+            return
+        keys = re.findall(r"sk-[A-Za-z0-9_-]{20,}", text or "")
+        if not keys:
+            return
+        for sk in dict.fromkeys(keys):
+            pool.add(
+                sk=sk,
+                base_url=source_url or "",
+                source_group=str(group_id),
+                source_user=str(sender_id),
+            )
 
     async def _analyze_sk_hit(
         self, sender_id: str, sender_name: str, text: str

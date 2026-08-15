@@ -936,5 +936,42 @@
                 "hint": "仅 keyword：normal 优先级（资源/自定义词）攒 N 秒合并成一条。0=立即推。critical 不受限。默认 60。"
             }
         }
+    },
+    "sk_gateway": {
+        "description": "SK 聚合网关（把监控抓到的 API Key 聚合成 OpenAI 兼容接口，类似轻量 9router/newapi）",
+        "type": "object",
+        "hint": "【可选】监控命中 sk- 密钥后自动写入 key 池，网关把池子聚合成一个 OpenAI 兼容地址供你本地工具使用。\n用法：开 gateway_enabled + 填 gateway_master_key（你的访问密码），客户端连 http://<服务器IP>:<端口>/v1，Authorization 填 Bearer <master_key>。\n渠道懒验证：不主动联网验真（不暴露服务器 IP），转发失败自动换下一个 key，连续失败自动踢出。\n注意：网关消耗的是群友分享的 key 的额度，请只给自己用，别把端口暴露到公网。",
+        "items": {
+            "gateway_enabled": {
+                "type": "bool",
+                "default": false,
+                "description": "【总开关】启用 SK 聚合网关",
+                "hint": "关=不启动网关（SK 监控照常推送，只是不聚合）。"
+            },
+            "gateway_host": {
+                "type": "string",
+                "default": "0.0.0.0",
+                "description": "【监听地址】默认 0.0.0.0 全接口",
+                "hint": "只给自己内网用可填 127.0.0.1；要局域网其他机器连就保持 0.0.0.0。"
+            },
+            "gateway_port": {
+                "type": "int",
+                "default": 6187,
+                "description": "【监听端口】默认 6187",
+                "hint": "和 AstrBot 的 6186 错开。"
+            },
+            "gateway_master_key": {
+                "type": "string",
+                "default": "",
+                "description": "【访问密钥】master key，客户端 Bearer 鉴权",
+                "hint": "自己随便定一个长随机串。为空则网关不启动（防止裸奔）。"
+            },
+            "sk_pool_max": {
+                "type": "int",
+                "default": 200,
+                "description": "【池容量】key 池上限，超出淘汰最旧",
+                "hint": "默认 200 条够用。"
+            }
+        }
     }
 }

@@ -137,6 +137,30 @@ class GroupDailyAnalysis(Star):
             handlers=[self.telegram_template_preview_handler]
         )
 
+        # SK 聚合网关（可选）：监控抓到的 key → 落盘池 → OpenAI 兼容网关
+        self.sk_pool = None
+        self.sk_gateway = None
+        try:
+            from .src.infrastructure.messaging.sk_gateway import SkGateway
+            from .src.infrastructure.messaging.sk_pool import SkPool
+
+            pool_path = os.path.join(plugin_data_dir, "sk_pool.json")
+            self.sk_pool = SkPool(
+                pool_path, max_size=self.config_manager.get_sk_pool_max()
+            )
+            # 监控服务共享同一个池：命中 sk 写入这里，网关从这里取渠道
+            self.message_monitor_service.sk_pool = self.sk_pool
+            self.sk_gateway = SkGateway(
+                pool=self.sk_pool,
+                master_key=self.config_manager.get_sk_gateway_master_key(),
+                host=self.config_manager.get_sk_gateway_host(),
+                port=self.config_manager.get_sk_gateway_port(),
+            )
+        except Exception as e:
+            logger.warning(f"SK 聚合网关装配失败（不影响主流程）: {e}")
+            self.sk_pool = None
+            self.sk_gateway = None
+
         # 调度与发送
         self.message_sender = MessageSender(self.bot_manager, self.config_manager)
         self.auto_scheduler = AutoScheduler(
@@ -242,6 +266,13 @@ class GroupDailyAnalysis(Star):
                     self._run_startup_cleanup()
                 except Exception as e:
                     logger.warning(f"启动清理失败（不影响主流程）: {e}")
+
+                # 5. 启动 SK 聚合网关（配置开启 + master key 非空时才监听）
+                if self.sk_gateway and self.config_manager.is_sk_gateway_enabled():
+                    try:
+                        await self.sk_gateway.start()
+                    except Exception as e:
+                        logger.error(f"SK 聚合网关启动失败: {e}")
 
                 self._initialized = True
                 self._discovery_run = True
@@ -359,6 +390,13 @@ class GroupDailyAnalysis(Star):
 
             if self.report_generator:
                 await self.report_generator.close()
+
+            # 停止 SK 聚合网关（若有）
+            if self.sk_gateway:
+                try:
+                    await self.sk_gateway.stop()
+                except Exception as e:
+                    logger.warning(f"SK 聚合网关停止失败: {e}")
 
             # 3. [关键修复] 只有在任务全部清理后，才清理引用。
             # 实际上，在 terminate 结束后，self 本身就会被 GC 释放，
@@ -1238,6 +1276,52 @@ class GroupDailyAnalysis(Star):
         except Exception as e:
             logger.error(f"重渲染日报命令异常: {e}", exc_info=True)
             yield event.plain_result(f"❌ 重渲染异常: {e}")
+        finally:
+            if current_task:
+                self._background_tasks.discard(current_task)
+
+    @filter.command("手动日报", alias={"manual_digest"})
+    @filter.permission_type(PermissionType.ADMIN)
+    async def manual_digest_report(self, event: AstrMessageEvent):
+        """手动触发一次完整的分类日报（拉消息 + LLM 分析 + 推送）。
+
+        与 /重渲染日报 的区别：本命令重新拉取消息并跑完整 LLM 分析，
+        不复用旧 digest。私聊可用（不依赖群聊），用于验证 LLM provider、
+        调试分析链路、或补跑漏掉的日报。
+        用法: /手动日报
+        """
+        if self._terminating:
+            return
+
+        current_task = asyncio.current_task()
+        if current_task:
+            self._background_tasks.add(current_task)
+
+        try:
+            event.should_call_llm(True)
+
+            if self.config_manager.get_delivery_mode() != "by_category":
+                yield event.plain_result("❌ 此命令仅 delivery_mode=by_category 可用")
+                return
+
+            if not self.auto_scheduler:
+                yield event.plain_result("❌ 调度器未初始化")
+                return
+
+            self.bot_manager.update_from_event(event)
+            yield event.plain_result(
+                "⏳ 正在拉取消息并跑完整分析（含 LLM），请稍候（约 3-10 分钟）..."
+            )
+
+            logger.info("手动日报触发 — 分类聚合模式 (by_category, 手动)")
+            await self.auto_scheduler._run_category_digest_report()
+
+            yield event.plain_result(
+                "✅ 手动日报已执行完成，查收推送结果（合并转发/邮件）"
+            )
+        except Exception as e:
+            logger.error(f"手动日报命令异常: {e}", exc_info=True)
+            yield event.plain_result(f"❌ 手动日报异常: {e}")
         finally:
             if current_task:
                 self._background_tasks.discard(current_task)
