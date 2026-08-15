@@ -286,6 +286,61 @@ def test_value_item_fingerprint_dedup_key():
     assert a.ensure_fingerprint() == b.ensure_fingerprint()
 
 
+def test_coerce_topic_preserves_importance():
+    """_coerce_topic 透传第一层重要度（dict 与对象两种形态），缺省 medium。"""
+    svc = _service()
+    # dict 形态（含重要度）
+    content, reason, importance = svc._coerce_topic(
+        {"topic": "AI 新模型", "detail": "发布", "importance": "high"}
+    )
+    assert content == "AI 新模型：发布"
+    assert importance == "high"
+    # 对象形态（SummaryTopic/TimelineEvent 适配）
+    obj = type("T", (), {"topic": "x", "detail": "y", "importance": "low"})()
+    _, _, imp2 = svc._coerce_topic(obj)
+    assert imp2 == "low"
+    # 缺省 medium
+    _, _, imp3 = svc._coerce_topic({"topic": "x", "detail": "y"})
+    assert imp3 == "medium"
+
+
+def test_theme_prompt_marks_importance():
+    """聚合提示词：条目带 [重要]/[一般]/[轻量] 标记，且要求宁缺毋滥+结构化叙事。"""
+    from src.infrastructure.analysis.analyzers.digest_theme_analyzer import (
+        DigestThemeAnalyzer,
+    )
+
+    analyzer = DigestThemeAnalyzer(
+        context=MagicMock(),
+        config_manager=MagicMock(
+            get_digest_max_themes=MagicMock(return_value=5)
+        ),
+    )
+    prompt = analyzer.build_prompt(
+        [
+            {
+                "item_id": 1,
+                "source": "雷达群",
+                "content": "GLM 新版本",
+                "reason": "",
+                "importance": "high",
+            },
+            {
+                "item_id": 2,
+                "source": "AstrBot群",
+                "content": "打卡",
+                "reason": "",
+                "importance": "low",
+            },
+        ]
+    )
+    assert "[重要]" in prompt
+    assert "[轻量]" in prompt
+    # 宁缺毋滥 + 结构化叙事要求
+    assert "宁缺毋滥" in prompt or "凑不出就少给" in prompt
+    assert "【主旨】" in prompt and "【要点】" in prompt
+
+
 def test_categories_groups_auto_admitted_in_whitelist_mode():
     """by_category 下，categories 里的群即使不在 basic 白名单也应自动放行。
 

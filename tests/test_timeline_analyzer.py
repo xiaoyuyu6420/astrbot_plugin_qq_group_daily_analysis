@@ -73,6 +73,10 @@ def test_build_prompt_includes_messages_and_negative_examples():
     assert "今天聊个重要的事" in prompt
     # 负面示例（解决杂质多）
     assert "哈哈哈哈" in prompt
+    # 扩充负面清单：广告/抽奖/晒图/打卡/无上下文转发
+    assert "广告" in prompt and "抽奖" in prompt
+    assert "晒" in prompt and "打卡" in prompt
+    assert "硬门槛" in prompt
     # 禁止模板（解决套路化）
     assert "禁止" in prompt or "不要套" in prompt
     assert prompt  # 非空

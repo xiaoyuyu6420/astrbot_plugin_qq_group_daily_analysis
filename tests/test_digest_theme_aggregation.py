@@ -63,6 +63,31 @@ def _make_items(n: int) -> list[ValueItem]:
     return [ValueItem(content=f"条目{i}", source_group_id="g1") for i in range(1, n + 1)]
 
 
+def test_aggregate_themes_serializes_importance():
+    """聚合输入序列化必须携带 importance（第二层提示词据此过滤轻量条目）。"""
+    items = [
+        ValueItem(content="重要事件", source_group_id="g1", importance="high"),
+        ValueItem(content="一般事件", source_group_id="g1", importance="medium"),
+        ValueItem(content="轻量事件", source_group_id="g1", importance="low"),
+    ]
+    captured: dict = {}
+
+    class _FakeAnalyzer:
+        async def analyze(self, serialized, umo=None, session_id=None):
+            captured["serialized"] = serialized
+            return [], MagicMock()
+
+    svc = _service(theme_analyzer=_FakeAnalyzer())
+    svc.analysis_service.llm_semaphore = asyncio.Semaphore(1)
+    asyncio.run(svc._aggregate_themes(items, "AI", "onebot"))
+
+    assert [d["importance"] for d in captured["serialized"]] == [
+        "high",
+        "medium",
+        "low",
+    ]
+
+
 # ---------------------------------------------------------------------------
 # _should_aggregate
 # ---------------------------------------------------------------------------

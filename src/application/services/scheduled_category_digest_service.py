@@ -49,6 +49,9 @@ class ValueItem:
     source_group_name: str = ""
     source_user_name: str = ""
     kind: str = "info"  # quote | topic | info
+    # 第一层分析器标记的重要度（high/medium/low），透传给二次聚合层参考。
+    # 默认 medium；聚合提示词据此刻意「轻量条目除非亮眼否则不收」。
+    importance: str = "medium"
     fingerprint: str = ""
 
     def ensure_fingerprint(self) -> str:
@@ -594,6 +597,7 @@ class ScheduledCategoryDigestService:
                     "source": " ".join(source_parts),
                     "content": item.content,
                     "reason": item.reason or "",
+                    "importance": item.importance or "medium",
                 }
             )
 
@@ -780,10 +784,11 @@ class ScheduledCategoryDigestService:
                     source_group_id=str(group_id),
                     source_user_id=sender,
                     kind="quote",
+                    importance="medium",
                 )
             )
         for t in topics or []:
-            content, reason = self._coerce_topic(t)
+            content, reason, importance = self._coerce_topic(t)
             if not content:
                 continue
             items.append(
@@ -792,6 +797,7 @@ class ScheduledCategoryDigestService:
                     reason=reason,
                     source_group_id=str(group_id),
                     kind="topic",
+                    importance=importance,
                 )
             )
         return items
@@ -811,18 +817,23 @@ class ScheduledCategoryDigestService:
         return content, reason, sender
 
     @staticmethod
-    def _coerce_topic(t: Any) -> tuple[str, str]:
+    def _coerce_topic(t: Any) -> tuple[str, str, str]:
+        """事件/话题 → (content, reason, importance)，保留第一层重要度供聚合参考。"""
         if isinstance(t, dict):
             name = str(t.get("topic") or t.get("name") or "").strip()
             detail = str(t.get("detail") or t.get("summary") or "").strip()
+            importance = str(t.get("importance") or "medium").strip() or "medium"
             if name and detail:
-                return f"{name}：{detail}", "话题"
-            return name or detail, "话题"
+                return f"{name}：{detail}", "话题", importance
+            return name or detail, "话题", importance
         name = str(getattr(t, "topic", "") or getattr(t, "name", "") or "").strip()
         detail = str(getattr(t, "detail", "") or getattr(t, "summary", "") or "").strip()
+        importance = (
+            str(getattr(t, "importance", "") or "medium").strip() or "medium"
+        )
         if name and detail:
-            return f"{name}：{detail}", "话题"
-        return name or detail, "话题"
+            return f"{name}：{detail}", "话题", importance
+        return name or detail, "话题", importance
 
     def pack_digests(
         self,
@@ -1137,7 +1148,7 @@ h2 {{ font-size:18px; color:#1a1a1a; background:#f0f4f8; padding:8px 12px; borde
 .meta {{ color:#8b929a; font-size:13px; margin:0 0 12px; }}
 .theme {{ background:#fff; border:1px solid #e0e3e8; border-radius:8px; padding:14px 16px; margin:12px 0; }}
 .theme-title {{ font-size:15px; font-weight:700; color:#1a1a1a; margin-bottom:6px; }}
-.narrative {{ line-height:1.7; font-size:14px; color:#3a4046; margin:6px 0 8px; }}
+.narrative {{ line-height:1.7; font-size:14px; color:#3a4046; margin:6px 0 8px; white-space:pre-line; }}
 .tags {{ margin:4px 0; }}
 .tag {{ background:#f0f1f3; color:#6b7480; padding:1px 6px; border-radius:3px; font-size:12px; margin-right:4px; }}
 .badge {{ display:inline-block; font-size:11px; font-weight:600; padding:1px 6px; border-radius:3px; margin-right:6px; }}

@@ -64,18 +64,20 @@ class DigestThemeAnalyzer(BaseAnalyzer[DigestTheme, list[dict]]):
     # ------------------------------------------------------------------
 
     def build_prompt(self, data: list[dict]) -> str:
-        """data: 条目序列化列表，每条含 item_id/source/content/reason。"""
+        """data: 条目序列化列表，每条含 item_id/source/content/reason/importance。"""
         if not isinstance(data, list) or not data:
             return ""
 
-        # 编排成带编号的条目列表（编号即 item_id，LLM 用它引用）
+        # 编排成带编号的条目列表（编号即 item_id，LLM 用它引用），重要度标记前置
+        level_tag = {"high": "[重要]", "medium": "[一般]", "low": "[轻量]"}
         lines: list[str] = []
         for item in data:
             item_id = item.get("item_id", "?")
             source = item.get("source", "")
             content = item.get("content", "")
             reason = item.get("reason", "")
-            line = f"[#{item_id}] {source}"
+            tag = level_tag.get(str(item.get("importance", "")).strip().lower(), "[一般]")
+            line = f"[#{item_id}] {tag} {source}"
             if content:
                 line += f"：{content}"
             if reason:
@@ -89,31 +91,44 @@ class DigestThemeAnalyzer(BaseAnalyzer[DigestTheme, list[dict]]):
     def _default_prompt(
         self, items_text: str, max_themes: int, total_items: int
     ) -> str:
-        return f"""你是一个信息聚合编辑。下面是从多个群聊中抽取的 {total_items} 条有价值信息（每条带 #[编号] 和来源）。
-它们彼此孤立、有重复、有关联。请把它们**按语义归并**成 {max_themes} 个左右的**核心主题**，让读者一眼 get 到「今天这圈到底发生了哪几件事」。
+        return f"""你是一个日报主编。下面是从多个群聊中提炼出的 {total_items} 条信息条目（每条带 #[编号]、来源群和重要度标记）。
+它们彼此孤立、有重复、有关联。请把它们**按语义归并**成 **2~{max_themes} 个核心主题**，让读者一分钟看懂「今天这圈到底发生了哪几件事」。
 
-## 什么是「主题」
+## 主题标准（宁缺毋滥）
 
-一个主题 = 多条围绕同一件事/同一话题的信息归并。把讨论同一事件的条目聚到一起，而不是让读者自己在 69 条里找关联。
+一个主题 = 多条围绕同一件事/同一话题、有信息增量的信息归并。**凑不出就少给**：今天只有 2 件值得讲的事就只给 2 个主题，绝不为了凑数硬造主题。
 
-## 每个主题怎么写（叙事，不要套模板）
+重要度标记含义：`[重要]`=high（有明确价值/可行动/多群讨论）、`[一般]`=medium（有一定信息量）、`[轻量]`=low（轻量）。
+**`[轻量]` 条目除非特别亮眼，否则不要收进任何主题。**
 
-用你自己的话讲清楚这个主题的来龙去脉：
-- 这件事是什么（谁提的、核心信息是什么）
-- 关键点（最有价值/最可行动的信息，提到来源用 #[编号] 格式自然带出）
-- 如果有结论或趋势，点一下
-**禁止**用「这是一组关于xxx的信息」这种空洞分类语，禁止简单罗列条目内容，要写成连贯的、有信息密度的概括。
+## 不要收进主题的（宁可漏收）
+
+- 广告/推广/抽奖/集赞/砍价
+- 纯晒图/晒战绩/晒日常，无讨论无信息
+- 打卡签到、无上下文转发（链接/视频不带说明）
+- 寒暄、情绪、玩梗、碎片化吐槽
+- 判断标准：读者看到这条会觉得「这有啥」，就不收
+
+## 每个主题怎么写（结构化，不要写散文）
+
+严格按这个结构，用「【】」前缀分行：
+
+【主旨】一句话说清这件事是什么（让人秒懂）
+【要点】2~5 条，每条一行用「- 」开头，放最有价值/最可行动的信息，提到来源用 #[编号] 自然带出
+【结论】有结论/共识/可行动建议就一句话点出；没有就省略这行
+
+**禁止**用「这是一组关于xxx的信息」这种空洞分类语，禁止罗列条目原文，禁止自由发挥写成长段散文。
 
 ## 重要性排序
 
 给每个主题标 importance：
 - high：有明确价值/可行动/或汇聚了多条高价值信息的核心主题
 - medium：有一定信息量但非核心
-- low：轻量但提一下无妨
+- low：轻量但值得一看
 
 ## 关联条目
 
-每个主题必须列出 related_item_ids——即归并到该主题下的原条目 #[编号]。一条条目可归入多个主题（如果它横跨多个话题）。无关紧要的游离条目不必硬塞进任何主题。
+每个主题必须列出 related_item_ids——即归并到该主题下的原条目 #[编号]。一条条目可归入多个主题（如果它横跨多个话题）。无关紧要的游离条目**不要硬塞**。
 
 ## 待聚合的信息条目（共 {total_items} 条）
 
@@ -121,19 +136,19 @@ class DigestThemeAnalyzer(BaseAnalyzer[DigestTheme, list[dict]]):
 
 ---
 
-## 返回格式（纯 JSON 数组，最多 {max_themes} 个主题，按 importance 从高到低排）
+## 返回格式（纯 JSON 数组，最少 1 个、最多 {max_themes} 个主题，按 importance 从高到低排）
 
 ```json
 [{{
   "title": "一句话说清这是什么主题（让人秒懂）",
-  "narrative": "用你自己的话讲清楚来龙去脉，提到具体信息用 #[编号] 格式自然带出",
+  "narrative": "【主旨】...\\n【要点】\\n- ...\\n- ...\\n【结论】...",
   "importance": "high",
   "tags": ["商机"],
   "related_item_ids": [1, 5, 12]
 }}]
 ```
 
-注意：返回纯 JSON，不要 markdown 代码块标记。若条目确实无法归并成主题，返回空数组 []。"""
+注意：返回纯 JSON，不要 markdown 代码块标记。若条目确实没有值得讲的主题，返回空数组 []。"""
 
     # ------------------------------------------------------------------
     # 解析 / 降级
