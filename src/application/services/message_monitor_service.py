@@ -61,12 +61,15 @@ BUILTIN_PATTERNS: list[tuple[re.Pattern, str, str]] = [
     (re.compile(r"AKIA[A-Z0-9]{16}"), "API Key", "疑似 AWS Access Key"),
     (re.compile(r"[A-Fa-f0-9]{32,}"), "API Key", "疑似 hex 密钥串"),
     (re.compile(r"[A-Za-z0-9+/]{40,}={0,2}"), "API Key", "疑似 base64 密钥串"),
-    # ── 资源链接类 ──
-    (re.compile(r"https?://\S{10,}"), "资源链接", "包含网址"),
+    # ── 资源链接类（收紧：keyword 模式不命中裸网址，避免普通分享刷屏）──
     (re.compile(r"magnet:\?\S+", re.IGNORECASE), "资源链接", "磁力链接"),
     (re.compile(r"(?:提取码|访问码|密码)\s*[:：]\s*\S+", re.IGNORECASE), "资源链接", "网盘提取码"),
     (re.compile(r"(?:邀请码|邀请|邀请链接)\s*[:：]?\s*\S{4,}", re.IGNORECASE), "渠道", "邀请码"),
 ]
+
+# 裸网址：仅 window/cross_group（整窗摘要）模式命中。
+# keyword 模式不匹配它——普通分享（GitHub/官网/镜像地址）会刷屏且每条约 1 次 LLM 确认。
+_URL_PATTERN = re.compile(r"https?://\S{10,}")
 
 # 关键词模式：LLM 确认用的 system prompt
 _KW_LLM_SYSTEM_PROMPT = (
@@ -263,12 +266,17 @@ class MessageMonitorService:
         sender_name = self._safe_sender_name(event, sender_id)
         platform_id = str(event.get_platform_id() or "").strip()
 
-        # 第二层：LLM 确认（可选）
+        # critical（API Key）命中：正则已足够精确（sk- 长密钥等），
+        # 跳过 LLM 确认直接秒推——省 token 且不延误最高价值场景。
+        # LLM 确认只用于 normal 类（网址/邀请码等模糊命中，噪音多）。
+        is_critical_hit = any(c == "API Key" for c, _ in hits)
+
+        # 第二层：LLM 确认（可选，仅 normal 类）
         verdict = None
-        if self.config_manager.is_llm_confirm_enabled():
+        if not is_critical_hit and self.config_manager.is_llm_confirm_enabled():
             verdict = await self._llm_confirm_keyword(sender_id, sender_name, text)
             if verdict is not None and not verdict.get("useful", True):
-                logger.debug(
+                logger.info(
                     f"[Monitor-KW] {sender_id}@{group_id} 命中但 LLM 判定无用，跳过"
                 )
                 return
@@ -357,6 +365,11 @@ class MessageMonitorService:
         for pattern, category, desc in BUILTIN_PATTERNS:
             if pattern.search(text):
                 hits.append((category, desc))
+        # window/cross_group（整窗摘要）模式下裸网址是有效资源信号；
+        # keyword 模式不匹配，避免普通分享刷屏 + 白烧确认 token
+        if self.config_manager.get_monitor_mode() != "keyword":
+            if _URL_PATTERN.search(text):
+                hits.append(("资源链接", "包含网址"))
         for kw in self.config_manager.get_monitor_extra_keywords():
             kw = str(kw).strip()
             if kw and kw in text:
@@ -1184,8 +1197,12 @@ class MessageMonitorService:
         llm_refine = None
         if self.config_manager.is_l1_use_llm_enabled():
             llm_refine = self._l1_llm_refine
+        # window/跨群模式：裸网址是有效资源信号（keyword 模式不匹配，见 _regex_scan）
+        layered_patterns = list(BUILTIN_PATTERNS) + [
+            (_URL_PATTERN, "资源链接", "包含网址")
+        ]
         extractor = GroupCandidateExtractor(
-            patterns=BUILTIN_PATTERNS,
+            patterns=layered_patterns,
             max_candidates_per_group=self.config_manager.get_max_candidates_per_group(),
             llm_refine_callback=llm_refine,
         )

@@ -350,13 +350,13 @@ async def test_keyword_normal_respects_cooldown():
     bot_mgr = FakeBotManager(fake_adapter)
     service = MessageMonitorService(MagicMock(), cfg, bot_mgr)
 
-    # 命中资源链接 → normal 优先级
-    evt1 = FakeEvent("111", "groupA", "check this https://example.com/very-long-url-path-here", "张三")
+    # 命中资源链接（提取码）→ normal 优先级
+    evt1 = FakeEvent("111", "groupA", "网盘资源 提取码: x9y2", "张三")
     await service.process(evt1)
     assert len(fake_adapter.sent_messages) == 1
 
     # 同一发送者@同一群 → 冷却中，被跳过
-    evt2 = FakeEvent("111", "groupA", "check this https://another-long-url-path-here.com/resource", "张三")
+    evt2 = FakeEvent("111", "groupA", "另一个资源 提取码: a1b2", "张三")
     await service.process(evt2)
     # 冷却生效，第二条不推
     assert len(fake_adapter.sent_messages) == 1
@@ -442,8 +442,8 @@ async def test_keyword_normal_batch():
     bot_mgr = FakeBotManager(fake_adapter)
     service = MessageMonitorService(MagicMock(), cfg, bot_mgr)
 
-    # 命中资源链接 → normal → 入队
-    evt1 = FakeEvent("111", "groupA", "check this https://example.com/very-long-url-path-here", "张三")
+    # 命中资源链接（提取码）→ normal → 入队
+    evt1 = FakeEvent("111", "groupA", "网盘资源 提取码: x9y2", "张三")
     await service.process(evt1)
 
     # 不应该立即推送（入了批量队列）

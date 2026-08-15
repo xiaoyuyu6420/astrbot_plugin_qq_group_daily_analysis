@@ -147,46 +147,50 @@ async def test_keyword_non_monitored_group_ignored():
 
 
 @pytest.mark.asyncio
-async def test_keyword_llm_confirms_useful():
-    """关键词命中 + LLM 确认有用 → 推送"""
+async def test_keyword_sk_skips_llm_confirm():
+    """sk 命中：正则已足够精确，跳过 LLM 确认直接秒推（省 token 主改动）。
+
+    线上优化：此前每条命中都先调 LLM 确认，sk 类消息多花 1 次确认调用。
+    """
     cfg = make_keyword_config(use_llm_confirm=True)
     adapter = FakeAdapter()
     svc = MessageMonitorService(MagicMock(), cfg, FakeBotManager(adapter))
 
-    llm_resp = MagicMock()
-    llm_resp.completion_text = json.dumps({
-        "useful": True, "reason": "含可用 OpenAI key", "category": "apikey"
-    })
-
     with patch(
         "src.application.services.message_monitor_service.call_provider_with_retry",
-        new_callable=AsyncMock, return_value=llm_resp
-    ):
-        await svc.process(FakeEvent("12345", "groupA", "sk-abcd1234efgh5678ijkl9012mnop3456", "路人"))
+        new_callable=AsyncMock,
+    ) as mock_llm:
+        await svc.process(
+            FakeEvent("12345", "groupA", "sk-abcd1234efgh5678ijkl9012mnop3456", "路人")
+        )
 
+    # sk 免确认：只剩 1 次 LLM 调用（平台/来源分析），不再多花确认调用
+    assert mock_llm.await_count == 1
     assert len(adapter.sent_messages) == 1
-    assert "apikey" in adapter.sent_messages[0]["text"]
-    print("✓ 关键词模式：命中 + LLM 确认有用 → 推送")
+    assert "API Key" in adapter.sent_messages[0]["text"]
+    print("✓ 关键词模式：sk 命中跳过 LLM 确认 → 秒推")
     svc.stop()
 
 
 @pytest.mark.asyncio
 async def test_keyword_llm_says_not_useful():
-    """关键词命中 + LLM 判定无用 → 不推送"""
+    """normal 类命中 + LLM 判定无用 → 不推送"""
     cfg = make_keyword_config(use_llm_confirm=True)
     adapter = FakeAdapter()
     svc = MessageMonitorService(MagicMock(), cfg, FakeBotManager(adapter))
 
     llm_resp = MagicMock()
     llm_resp.completion_text = json.dumps({
-        "useful": False, "reason": "只是讨论 API key 的概念，没有实际 key", "category": "其他"
+        "useful": False, "reason": "只是普通网盘链接，没有资源价值", "category": "其他"
     })
 
     with patch(
         "src.application.services.message_monitor_service.call_provider_with_retry",
         new_callable=AsyncMock, return_value=llm_resp
     ):
-        await svc.process(FakeEvent("12345", "groupA", "api key 怎么申请啊", "路人"))
+        await svc.process(
+            FakeEvent("12345", "groupA", "我把网盘链接发你 提取码: x9y2", "路人")
+        )
 
     assert len(adapter.sent_messages) == 0
     print("✓ 关键词模式：命中但 LLM 判定无用 → 不推送")
