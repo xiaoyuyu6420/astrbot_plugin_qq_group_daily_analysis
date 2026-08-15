@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -30,6 +31,9 @@ from ...infrastructure.utils.name_resolver import NameResolver
 # 分类摘要单张图最多展示的条目数（与 _format_items 默认一致）。
 # 保留为兜底默认值；实际运行时优先读配置 digest_max_items_per_section。
 _MAX_ITEMS_PER_SECTION = 12
+# 摘要内 #[编号] → 来源标签的截断长度
+_SOURCE_TAG_GROUP_MAX = 8
+_SOURCE_TAG_USER_MAX = 6
 
 
 @dataclass
@@ -988,7 +992,7 @@ class ScheduledCategoryDigestService:
             )]
 
         def _build_category_html(d: CategoryDigest) -> str:
-            """单个分类 → HTML 片段（主题叙事可见 + 原文折叠）。"""
+            """单个分类 → HTML 片段（主题叙事可见 + 按群二次折叠原文）。"""
             parts: list[str] = []
             meta = (
                 f"{len(d.groups_analyzed)} 群 · {len(d.items)} 条"
@@ -996,6 +1000,49 @@ class ScheduledCategoryDigestService:
             )
             parts.append(f'<h2>{_esc(d.name)}</h2>')
             parts.append(f'<p class="meta">{_esc(meta)}</p>')
+
+            # 全局编号（= digest.items 的 1-based 索引），锚点与摘要 #[n] 对应
+            idx_of = {id(it): idx for idx, it in enumerate(d.items, 1)}
+
+            def _narrative_anchored(narrative: str) -> str:
+                """摘要里的 #[41] → 可点击锚点 <a href="#item-41">。"""
+                if not narrative:
+                    return ""
+                esc = _esc(narrative)
+
+                def _repl(m: re.Match) -> str:
+                    n = int(m.group(1))
+                    if 1 <= n <= len(d.items):
+                        return f'<a href="#item-{n}">#{n}</a>'
+                    return m.group(0)
+
+                return re.sub(r"#\[(\d+)\]", _repl, esc)
+
+            def _group_details(items: list, summary_label: str) -> str:
+                """按群分组渲染原文折叠块；条目带全局锚点 id。"""
+                groups: dict[str, list[tuple[int, Any]]] = {}
+                for item in items:
+                    idx = idx_of.get(id(item), 0)
+                    gn = item.source_group_name or (
+                        f"群{item.source_group_id}" if item.source_group_id else "未知群"
+                    )
+                    groups.setdefault(gn, []).append((idx, item))
+                html_parts: list[str] = []
+                for gn, entries in groups.items():
+                    html_parts.append(
+                        f'<details class="group-details">'
+                        f'<summary>📎 {_esc(gn)}（{len(entries)} 条）</summary>'
+                    )
+                    for idx, item in entries:
+                        anchor = f' id="item-{idx}"' if idx else ""
+                        html_parts.append(
+                            f'<div class="orig-item"{anchor}>'
+                            f'{self._format_item_email(item, _esc)}</div>'
+                        )
+                    html_parts.append("</details>")
+                if not groups:
+                    html_parts.append(f"<p class=\"meta\">{_esc(summary_label)}</p>")
+                return "\n".join(html_parts)
 
             if d.themes:
                 rank_badge = {
@@ -1016,21 +1063,15 @@ class ScheduledCategoryDigestService:
                     )
                     if tags_html:
                         parts.append(f'<div class="tags">{tags_html}</div>')
-                    parts.append(f'<div class="narrative">{_esc(theme.narrative)}</div>')
-                    # 关联原文：折叠
+                    parts.append(
+                        f'<div class="narrative">{_narrative_anchored(theme.narrative)}</div>'
+                    )
+                    # 关联原文：按群二次折叠（不混 ID 群号）
                     if theme.related_items:
-                        parts.append("<details>")
-                        parts.append(
-                            f'<summary>📎 用户原文（{len(theme.related_items)} 条）</summary>'
-                        )
-                        for item in theme.related_items:
-                            parts.append(
-                                f'<div class="orig-item">{self._format_item_email(item, _esc)}</div>'
-                            )
-                        parts.append("</details>")
+                        parts.append(_group_details(theme.related_items, "关联原文"))
                     parts.append("</div>")
 
-                # 游离条目：折叠
+                # 游离条目：按群折叠
                 assigned_ids = {
                     id_ for theme in d.themes for id_ in theme.related_item_ids
                 }
@@ -1040,24 +1081,10 @@ class ScheduledCategoryDigestService:
                     if idx not in assigned_ids
                 ]
                 if orphans:
-                    parts.append("<details>")
-                    parts.append(
-                        f'<summary>📎 其他未归类信息（{len(orphans)} 条）</summary>'
-                    )
-                    for item in orphans:
-                        parts.append(
-                            f'<div class="orig-item">{self._format_item_email(item, _esc)}</div>'
-                        )
-                    parts.append("</details>")
+                    parts.append(_group_details(orphans, "其他未归类信息"))
             else:
-                # 降级：全量折叠（条目多时默认收起）
-                parts.append("<details>")
-                parts.append(f'<summary>📎 全部信息（{len(d.items)} 条）</summary>')
-                for item in d.items:
-                    parts.append(
-                        f'<div class="orig-item">{self._format_item_email(item, _esc)}</div>'
-                    )
-                parts.append("</details>")
+                # 降级：全量按群折叠（条目多时默认收起）
+                parts.append(_group_details(d.items, "全部信息"))
             return "\n".join(parts)
 
         if mode == "merged":
@@ -1120,6 +1147,12 @@ h2 {{ font-size:18px; color:#1a1a1a; background:#f0f4f8; padding:8px 12px; borde
 details {{ margin:8px 0; }}
 details summary {{ cursor:pointer; color:#3a6ea5; font-size:13px; font-weight:600; padding:6px 0; }}
 details[open] summary {{ color:#c53030; margin-bottom:6px; }}
+details.group-details {{ margin:2px 0 6px; padding-left:8px; border-left:2px solid #e3e6ea; }}
+details.group-details summary {{ font-size:12.5px; color:#57606a; }}
+details.group-details[open] summary {{ color:#3a6ea5; }}
+details.group-details .orig-item {{ margin:4px 0; }}
+.orig-item a {{ color:#3a6ea5; text-decoration:none; font-weight:600; }}
+.narrative a {{ color:#3a6ea5; text-decoration:none; font-weight:600; }}
 .orig-item {{ background:#fafbfc; padding:8px 12px; margin:6px 0; font-size:13px; color:#4a5258; line-height:1.5; border-radius:4px; border-left:2px solid #e0e3e8; }}
 .group-tag {{ background:#eef3f8; color:#3a6ea5; padding:0 5px; border-radius:3px; font-size:12px; font-weight:600; }}
 .user-name {{ color:#8b5a9f; font-weight:600; }}
@@ -1149,7 +1182,11 @@ hr {{ border:none; border-top:1px solid #e3e6ea; margin:20px 0; }}
                 if tags_str:
                     lines.append(tags_str)
                     lines.append("")
-                lines.append(theme.narrative)
+                lines.append(
+                    ScheduledCategoryDigestService._narrative_with_sources(
+                        theme.narrative, digest
+                    )
+                )
                 lines.append("")
                 if theme.related_items:
                     lines.append("**关联信息：**")
@@ -1221,7 +1258,11 @@ hr {{ border:none; border-top:1px solid #e3e6ea; margin:20px 0; }}
             for theme in digest.themes:
                 stars = rank_label.get(theme.importance, "★★")
                 lines.append(f"{stars} {theme.title}")
-                lines.append(theme.narrative)
+                lines.append(
+                    ScheduledCategoryDigestService._narrative_with_sources(
+                        theme.narrative, digest
+                    )
+                )
                 if theme.related_items:
                     for i, item in enumerate(theme.related_items, 1):
                         lines.append(self._format_single_item(item, i))
@@ -1391,6 +1432,36 @@ hr {{ border:none; border-top:1px solid #e3e6ea; margin:20px 0; }}
         }
 
     @staticmethod
+    def _narrative_with_sources(narrative: str, digest: CategoryDigest) -> str:
+        """把摘要文本里的内部编号 #[41] 替换成短来源标签 [群名·人名]。
+
+        编号是给 LLM 归并用的内部引用，读者看到「#[41]」无法跳转、很怪。
+        各渲染出口（图片/邮件/文本/Markdown）统一用它替换成可读来源。
+        群名截 8 字、人名截 6 字，超长省略号。
+        """
+        if not narrative or not digest.items:
+            return narrative
+        id_to_item = {idx: item for idx, item in enumerate(digest.items, 1)}
+
+        def _short(s: str, limit: int) -> str:
+            s = (s or "").strip()
+            return s if len(s) <= limit else s[:limit] + "…"
+
+        def _repl(m: re.Match) -> str:
+            item = id_to_item.get(int(m.group(1)))
+            if not item:
+                return m.group(0)
+            g = _short(
+                item.source_group_name or item.source_group_id or "",
+                _SOURCE_TAG_GROUP_MAX,
+            )
+            u = _short(item.source_user_name or "", _SOURCE_TAG_USER_MAX)
+            label = f"{g}·{u}" if g and u else (g or u or "群")
+            return f"[{label}]"
+
+        return re.sub(r"#\[(\d+)\]", _repl, narrative)
+
+    @staticmethod
     def _section_from_digest(
         digest: CategoryDigest, show_name: bool = True, max_items: int = _MAX_ITEMS_PER_SECTION
     ) -> dict[str, Any]:
@@ -1417,13 +1488,14 @@ hr {{ border:none; border-top:1px solid #e3e6ea; margin:20px 0; }}
                 "themes": [
                     {
                         "title": theme.title,
-                        "narrative": theme.narrative,
+                        "narrative": ScheduledCategoryDigestService._narrative_with_sources(
+                            theme.narrative, digest
+                        ),
                         "importance": theme.importance,
                         "tags": theme.tags or [],
-                        "entries": [
-                            ScheduledCategoryDigestService._serialize_entry(item, i)
-                            for i, item in enumerate(theme.related_items, 1)
-                        ],
+                        # 图片版不展示原文（原文在邮件/Markdown），entries 置空，
+                        # 模板据此跳过 related 渲染 —— 避免图里塞 100 条原文
+                        "entries": [],
                     }
                     for theme in digest.themes
                 ],

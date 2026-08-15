@@ -76,6 +76,28 @@ _KW_LLM_SYSTEM_PROMPT = (
     "忽略闲聊、灌水、玩梗、情绪宣泄。宁缺毋滥。"
 )
 
+# sk 密钥专项分析 prompt（命中 API Key 正则后调用，分析平台/来源/可信度）
+_SK_ANALYSIS_SYSTEM_PROMPT = (
+    "你是一个 API 密钥分析助手。给你一条含有 sk- 开头密钥的群聊消息，"
+    "分析这个密钥的来源和可信度。"
+)
+
+_SK_ANALYSIS_USER_TEMPLATE = """分析以下群聊消息中的 API 密钥：
+
+发送者：{sender}（{sender_name}）
+消息内容：
+{content}
+
+请分析并返回纯 JSON（不要 markdown 代码块）：
+{{"platform": "OpenAI官方/Claude/第三方中转站/其他/不确定", "source_url": "消息里附带的网址（如中转站地址），没有则留空", "confidence": "high/medium/low", "note": "一句话判断：是否像真实可用密钥，还是测试/玩笑/已失效"}}
+
+判断依据：
+- OpenAI 官方密钥：sk- 后接 48 位左右字母数字（如 sk-proj-xxx）
+- Claude 密钥：通常 sk-ant- 开头
+- 第三方中转站：消息里通常附带中转站网址，sk 格式可能不标准
+- 低可信度：明显是示例/测试值（如 sk-test123）、玩梗、无上下文
+"""
+
 _KW_LLM_USER_TEMPLATE = """请判断以下群聊消息是否含有可行动的有价值信息。
 
 发送者：{sender}（{sender_name}）
@@ -183,13 +205,17 @@ class MessageMonitorService:
             if not self._is_monitored_group(group_id):
                 return
 
-            text = self._extract_text(event)
+            text = await self._extract_text(event)
             if not text or not text.strip():
                 return
 
             # 按模式分流
             mode = self.config_manager.get_monitor_mode()
             if mode == "keyword":
+                logger.info(
+                    f"[Monitor] 收到监控群消息 group={group_id} sender={sender_id} "
+                    f"len={len(text)}，进入关键词判定"
+                )
                 await self._process_keyword(event, sender_id, group_id, text)
             else:
                 await self._process_window(event, sender_id, group_id, text)
@@ -229,6 +255,10 @@ class MessageMonitorService:
         hits = self._regex_scan(text)
         if not hits:
             return  # 绝大多数消息在这里被丢弃
+        logger.info(
+            f"[Monitor-KW] 命中 {sender_id}@{group_id}: "
+            f"{'、'.join(c for c, _ in hits)}"
+        )
 
         sender_name = self._safe_sender_name(event, sender_id)
         platform_id = str(event.get_platform_id() or "").strip()
@@ -245,7 +275,7 @@ class MessageMonitorService:
 
         # 第三层：优先级分级
         priority = self._noise_reducer.classify_priority(hits, verdict)
-        logger.debug(
+        logger.info(
             f"[Monitor-KW] {sender_id}@{group_id} 命中，优先级={priority}"
         )
 
@@ -274,6 +304,14 @@ class MessageMonitorService:
         batch_sec = self.config_manager.get_keyword_batch_seconds()
         if priority == NoiseReducer.PRIORITY_CRITICAL:
             # critical → 立即推送
+            # 密钥类（API Key）命中：追加 LLM 平台分析 + 联网验真
+            sk_analysis = None
+            verify_result = None
+            is_key_hit = any(c == "API Key" for c, _ in hits)
+            if is_key_hit:
+                sk_analysis = await self._analyze_sk_hit(sender_id, sender_name, text)
+                source_url = (sk_analysis or {}).get("source_url") or None
+                verify_result = await self._verify_sk_real(text, source_url)
             await self._push_keyword_alert(
                 sender_id=sender_id,
                 sender_name=sender_name,
@@ -282,6 +320,8 @@ class MessageMonitorService:
                 hits=hits,
                 llm_verdict=verdict,
                 platform_id=platform_id,
+                sk_analysis=sk_analysis,
+                verify_result=verify_result,
             )
             self._noise_reducer.mark_cooldown(sender_id, group_id)
             self._noise_reducer.mark_dedup(text)
@@ -345,6 +385,56 @@ class MessageMonitorService:
             logger.warning(f"[Monitor-KW] LLM 确认失败，降级为命中即推: {e}")
             return None
 
+    async def _analyze_sk_hit(
+        self, sender_id: str, sender_name: str, text: str
+    ) -> dict | None:
+        """sk 密钥专项分析：LLM 分析平台/来源网址/可信度。
+
+        在 critical（API Key）命中后调用，辅助判断密钥真实性。
+        复用 call_provider_with_retry + _parse_llm_json。
+        失败返回 None（推送里显示"分析不可用"）。
+        """
+        try:
+            prompt = _SK_ANALYSIS_USER_TEMPLATE.format(
+                sender=sender_id, sender_name=sender_name, content=text[:2000]
+            )
+            resp = await call_provider_with_retry(
+                context=self.context,
+                config_manager=self.config_manager,
+                prompt=prompt,
+                system_prompt=_SK_ANALYSIS_SYSTEM_PROMPT,
+            )
+            if resp is None:
+                return None
+            raw = extract_response_text(resp).strip()
+            return self._parse_llm_json(raw)
+        except Exception as e:
+            logger.warning(f"[Monitor-KW] sk 密钥分析失败，降级跳过: {e}")
+            return None
+
+    async def _verify_sk_real(
+        self, text: str, source_url: str | None
+    ) -> dict[str, str] | None:
+        """联网验真 sk（调 OpenAI /v1/models + 中转站）。
+
+        仅当 verify_sk_real 配置开启时调用。失败返回 None。
+        注意：会用 sk 调外部 API，服务器 IP 会被对方 key 后台记录。
+        """
+        getter = getattr(self.config_manager, "is_verify_sk_real_enabled", None)
+        if not callable(getter) or not getter():
+            return None  # 开关关，跳过
+        # 从文本提取 sk- 串（取最长的那个，最可能是真实密钥）
+        sk_matches = re.findall(r"sk-[A-Za-z0-9_-]{20,}", text)
+        if not sk_matches:
+            return None
+        sk = max(sk_matches, key=len)
+        try:
+            from ...infrastructure.messaging.sk_verifier import verify_sk
+            return await verify_sk(sk, source_url)
+        except Exception as e:
+            logger.warning(f"[Monitor-KW] sk 验真失败: {e}")
+            return None
+
     async def _push_keyword_alert(
         self,
         sender_id: str,
@@ -354,8 +444,14 @@ class MessageMonitorService:
         hits: list[tuple[str, str]],
         llm_verdict: dict | None,
         platform_id: str,
+        sk_analysis: dict | None = None,
+        verify_result: dict[str, str] | None = None,
     ) -> None:
-        """关键词模式：格式化并即时推送。"""
+        """关键词模式：格式化并即时推送。
+
+        sk_analysis：sk 命中后的 LLM 平台/来源分析（None=未分析/非密钥）
+        verify_result：联网验真结果（None=未验真/开关关/失败）
+        """
         categories = sorted({c for c, _ in hits})
         category_str = "/".join(categories) if categories else "未知"
 
@@ -372,6 +468,25 @@ class MessageMonitorService:
         hit_details = "、".join(desc for _, desc in hits[:3])
         content_display = text if len(text) <= 800 else text[:800] + " …(截断)"
 
+        # sk 专项分析 + 验真结果（仅密钥类命中时追加）
+        sk_lines = ""
+        if sk_analysis:
+            platform = sk_analysis.get("platform", "不确定")
+            source_url = sk_analysis.get("source_url", "")
+            confidence = sk_analysis.get("confidence", "")
+            note = sk_analysis.get("note", "")
+            conf_map = {"high": "高", "medium": "中", "low": "低"}
+            conf_str = conf_map.get(confidence, confidence)
+            sk_lines += f"🔬 平台：{platform}（可信度：{conf_str}）\n"
+            if source_url:
+                sk_lines += f"🌐 来源：{source_url}\n"
+            if note:
+                sk_lines += f"📌 备注：{note}\n"
+        if verify_result is not None:
+            from ...infrastructure.messaging.sk_verifier import format_verify_result
+            verify_str = format_verify_result(verify_result)
+            sk_lines += f"✅ 验真：{verify_str}\n"
+
         alert = (
             f"🚨 关键词命中预警\n"
             f"━━━━━━━━━━━━━\n"
@@ -379,6 +494,10 @@ class MessageMonitorService:
             f"📍 群：{group_id}\n"
             f"🏷️ 类别：{category_str}\n"
             f"💡 判断：{reason or hit_details}\n"
+        )
+        if sk_lines:
+            alert += sk_lines
+        alert += (
             f"\n"
             f"📝 原文：\n{content_display}\n"
             f"\n"
@@ -928,12 +1047,19 @@ class MessageMonitorService:
             return False
         return group_id in watched_groups
 
-    def _extract_text(self, event: AstrMessageEvent) -> str:
-        """提取消息纯文本。优先 message_str，兜底遍历消息段。"""
-        text = (getattr(event, "message_str", "") or "").strip()
-        if text:
-            return text
+    async def _extract_text(self, event: AstrMessageEvent) -> str:
+        """提取消息纯文本。优先 message_str，兜底遍历消息段。
+
+        支持合并转发消息（forward 段）：转发包的文本不在事件里，需调
+        get_forward_msg API 拉取子消息文本合并。失败降级为不解析（只漏转发内容）。
+        """
         parts: list[str] = []
+        # 普通文本
+        msg_str = (getattr(event, "message_str", "") or "").strip()
+        if msg_str:
+            parts.append(msg_str)
+        # 遍历消息段，收集 Plain/text + forward 的 message_id
+        forward_ids: list[str] = []
         message_obj = getattr(event, "message_obj", None)
         message = getattr(message_obj, "message", None) if message_obj else None
         if message:
@@ -945,6 +1071,86 @@ class MessageMonitorService:
                     )
                     if t:
                         parts.append(str(t))
+                elif seg_type == "forward":
+                    # forward 段的 data 含 id（resId）
+                    fwd_data = getattr(seg, "data", None) or {}
+                    if isinstance(fwd_data, dict):
+                        fwd_id = fwd_data.get("id") or fwd_data.get("resId") or ""
+                        if fwd_id:
+                            forward_ids.append(str(fwd_id))
+        # 拉取转发包文本（异步，失败降级）
+        for fwd_id in forward_ids[:3]:  # 最多解析 3 层转发，防递归爆炸
+            fwd_text = await self._extract_forward_text(event, fwd_id)
+            if fwd_text:
+                parts.append(fwd_text)
+        return " ".join(parts).strip()
+
+    async def _extract_forward_text(
+        self, event: AstrMessageEvent, message_id: str
+    ) -> str:
+        """拉取合并转发消息的子消息文本。
+
+        调 adapter.get_forward_msg 拿转发包，递归提取每条子消息的文本。
+        失败/超时返回空字符串（不影响主流程）。
+        """
+        platform_id = str(event.get_platform_id() or "").strip()
+        adapter = self.bot_manager.get_adapter(platform_id) if platform_id else None
+        # 兜底：遍历找支持 get_forward_msg 的 adapter
+        if not adapter or not hasattr(adapter, "get_forward_msg"):
+            for pid in self._get_all_platform_ids():
+                a = self.bot_manager.get_adapter(pid)
+                if a and hasattr(a, "get_forward_msg"):
+                    adapter = a
+                    break
+        if not adapter or not hasattr(adapter, "get_forward_msg"):
+            return ""
+        try:
+            result = await adapter.get_forward_msg(message_id)
+            if not result:
+                return ""
+            return self._flatten_forward_messages(result)
+        except Exception as e:
+            logger.warning(f"[Monitor] 转发消息解析失败 (id={message_id}): {e}")
+            return ""
+
+    def _flatten_forward_messages(self, forward_data: dict, depth: int = 0) -> str:
+        """递归展平 get_forward_msg 返回的转发包为纯文本。
+
+        NapCat/OneBot 返回结构：{"messages": [ {content: [...], ...}, ... ]}
+        每条子消息的 content 是消息段列表，提取 text 段。嵌套转发递归（限 3 层）。
+        """
+        if depth > 3:
+            return ""
+        messages = forward_data.get("messages") or forward_data.get("message") or []
+        if not isinstance(messages, list):
+            return ""
+        parts: list[str] = []
+        for msg in messages:
+            if not isinstance(msg, dict):
+                continue
+            sender_name = ""
+            sender = msg.get("sender") or {}
+            if isinstance(sender, dict):
+                sender_name = sender.get("card") or sender.get("nickname") or ""
+            content = msg.get("content") or msg.get("message") or []
+            if not isinstance(content, list):
+                continue
+            for seg in content:
+                if not isinstance(seg, dict):
+                    continue
+                seg_type = seg.get("type", "")
+                seg_data = seg.get("data") or {}
+                if seg_type in ("text", "Plain"):
+                    t = seg_data.get("text") or ""
+                    if t:
+                        prefix = f"[{sender_name}] " if sender_name else ""
+                        parts.append(f"{prefix}{t}")
+                elif seg_type == "forward":
+                    # 嵌套转发：记录 id，但无法在此处异步拉取，跳过（极少见）
+                    pass
+            # 防止单条过长
+            if len(parts) > 200:
+                break
         return " ".join(parts).strip()
 
     # ============================================================

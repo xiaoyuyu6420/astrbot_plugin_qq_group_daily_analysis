@@ -45,12 +45,8 @@
             page-break-inside: avoid;  /* 老浏览器兼容 */
         }
 
-        /* 分栏容器：themes 超过 3 个时启用双栏，压缩纵向高度 */
+        /* 主题卡片列表：单栏（双栏会让消息多时右侧大片空白） */
         .themes-grid {
-            column-count: 2;
-            column-gap: 16px;
-        }
-        .themes-grid.single-col {
             column-count: 1;
         }
 
@@ -104,26 +100,10 @@
             color: #3a4046;
             margin: 4px 0 0 0;
             font-size: 0.92em;
-        }
-
-        /* 关联条目（可追溯来源）—— 嵌入式引用块（紧凑） */
-        .related {
-            margin-top: 8px;
-            padding: 7px 10px;
-            background: #fafbfc;
-            border-left: 3px solid #d0d4da;
-            border-radius: 0 6px 6px 0;
-        }
-
-        .related-item {
-            margin: 4px 0;
-            font-size: 0.84em;
-            line-height: 1.45;
-            color: #4a5258;
-        }
-
-        .related-item:last-child {
-            margin-bottom: 0;
+            display: -webkit-box;
+            -webkit-line-clamp: 3;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
         }
 
         .group-tag {
@@ -140,19 +120,6 @@
             color: #8b5a9f;
             font-weight: 600;
             margin-right: 3px;
-        }
-
-        /* 游离条目（未被主题归并）—— 次要展示 */
-        .orphans {
-            margin-top: 6px;
-            padding-top: 8px;
-            border-top: 1px dashed #e0e3e8;
-        }
-
-        .orphans-title {
-            font-size: 0.78em;
-            color: #8b929a;
-            margin-bottom: 6px;
         }
 
         /* 平铺条目（降级：聚合未触发/失败时）—— 兼容旧逻辑（紧凑） */
@@ -257,8 +224,8 @@
 
             {# ── 聚合主题渲染（themes 非空时）── #}
             {% if section.themes %}
-                {# 主题超过 3 个用双栏压缩纵向，否则单栏 #}
-                <div class="themes-grid{% if section.themes|length <= 3 %} single-col{% endif %}">
+                {# 主题超过 3 个用双栏压缩纵向，否则单栏（图片版统一单栏） #}
+                <div class="themes-grid">
                 {% for theme in section.themes %}
                 <div class="theme">
                     <div class="theme-header">
@@ -288,26 +255,10 @@
                 {% endfor %}
                 </div>{# /themes-grid #}
 
-                {# 游离条目（未被任何主题归并的原条目，信息完整性兜底） #}
+                {# 游离条目：图片版不展示原文（避免图过长/右侧空白），只提示数量 #}
                 {% if section.orphans %}
-                <div class="orphans">
-                    <div class="orphans-title">其他未归类信息</div>
-                    <div class="themes-grid">
-                    {% for item in section.orphans %}
-                    <div class="related-item" style="break-inside: avoid;">
-                        {% if item.source_group_name %}
-                        <span class="group-tag">{{ item.source_group_name }}</span>
-                        {% elif item.source_group_id %}
-                        <span class="group-tag">群{{ item.source_group_id }}</span>
-                        {% endif %}
-                        {% if item.source_user_name %}<span class="user-tag">{{ item.source_user_name }}:</span>{% endif %}
-                        {{ item.content }}
-                    </div>
-                    {% endfor %}
-                    </div>
-                    {% if section.omitted %}
-                    <div class="omitted-note">… 另有 {{ section.omitted }} 条已省略</div>
-                    {% endif %}
+                <div class="omitted-note">
+                    … 另有 {{ section.orphans|length + section.omitted }} 条未归类信息，详见邮件附件
                 </div>
                 {% endif %}
 

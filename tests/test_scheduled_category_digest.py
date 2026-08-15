@@ -10,6 +10,7 @@ from src.application.services.scheduled_category_digest_service import (
     ValueItem,
 )
 from src.domain.entities.push_category import PushCategory
+from src.domain.models.data_models import DigestTheme
 from src.infrastructure.config.config_manager import ConfigManager
 from src.infrastructure.reporting.templates import HTMLTemplates
 from tests.conftest import AstrBotConfig
@@ -189,6 +190,94 @@ def test_non_retryable_llm_error_detected():
     assert not _is_non_retryable_llm_error(
         Exception("Error code: 429 - rate limit exceeded")
     )
+
+
+def _digest_with_named_items():
+    """构造带群名/人名的 digest：3 条，第 1 条来自「雷达群·林然喵」，第 3 条来自「AstrBot群·喵」。"""
+    items = [
+        ValueItem(
+            content="GLM-5.3 额度 100 刀",
+            source_group_id="975206796",
+            source_group_name="雷达群",
+            source_user_id="3035348107",
+            source_user_name="林然喵",
+        ),
+        ValueItem(
+            content="Gemini 3.7 实测 300 token/s",
+            source_group_id="975206796",
+            source_group_name="雷达群",
+            source_user_id="3534168609",
+            source_user_name="丶",
+        ),
+        ValueItem(
+            content="AstrBot 群 50 人涨到 900",
+            source_group_id="1021544792",
+            source_group_name="AstrBot群",
+            source_user_id="2094049796",
+            source_user_name="喵",
+        ),
+    ]
+    themes = [
+        DigestTheme(
+            title="模型圈大乱斗",
+            narrative="凌晨有人甩出 100 刀额度 #[1]，实测 300 token/s #[2]，AstrBot 群涨粉 #[3]",
+            importance="high",
+            tags=["AI"],
+            related_item_ids=[1, 2, 3],
+            related_items=items,
+        )
+    ]
+    return CategoryDigest(name="技术/AI", items=items, themes=themes)
+
+
+def test_narrative_sources_replaces_citation_ids():
+    """摘要里 #[41] 这类内部编号要换成可读来源标签 [群名·人名]。"""
+    d = _digest_with_named_items()
+    out = ScheduledCategoryDigestService._narrative_with_sources(
+        d.themes[0].narrative, d
+    )
+    assert "#[1]" not in out and "#[2]" not in out and "#[3]" not in out
+    assert "[雷达群·林然喵]" in out
+    assert "[雷达群·丶]" in out
+    assert "[AstrBot群·喵]" in out
+
+
+def test_narrative_sources_unknown_id_preserved():
+    """编号越界（LLM 幻觉）时保留原文，不崩。"""
+    d = _digest_with_named_items()
+    out = ScheduledCategoryDigestService._narrative_with_sources(
+        "某处引用 #[99] 不存在", d
+    )
+    assert "#[99]" in out
+
+
+def test_email_anchor_and_group_details():
+    """邮件：摘要 #[n] 变可点锚点；原文按群二次折叠；条目带全局 id。"""
+    svc = _service()
+    d = _digest_with_named_items()
+    html = svc.pack_digests_email_html(
+        [d], push_mode="split", date_str="2026-08-15"
+    )[0][1]
+    # 锚点链接 + 对应锚点目标
+    assert 'href="#item-1"' in html
+    assert 'href="#item-3"' in html
+    assert 'id="item-1"' in html
+    # 按群分组折叠：两个群两组
+    assert "雷达群（2 条）" in html
+    assert "AstrBot群（1 条）" in html
+    # 群名优先展示，不再裸奔群号/QQ 号
+    assert "群975206796" not in html
+
+
+def test_image_payload_theme_has_no_entries():
+    """图片 payload：主题不再携带原文条目（原文进邮件），narrative 已换来源标签。"""
+    svc = _service()
+    d = _digest_with_named_items()
+    payloads = svc.pack_digests_payload([d], push_mode="split", date_str="2026-08-15")
+    theme = payloads[0]["sections"][0]["themes"][0]
+    assert theme["entries"] == []
+    assert "#[1]" not in theme["narrative"]
+    assert "[雷达群·林然喵]" in theme["narrative"]
 
 
 def test_value_item_fingerprint_dedup_key():

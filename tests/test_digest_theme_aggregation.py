@@ -119,7 +119,8 @@ def test_section_from_digest_themes_priority():
     assert len(section["themes"]) == 2
     assert section["themes"][0]["title"] == "主题A"
     assert section["themes"][0]["importance"] == "high"
-    assert len(section["themes"][0]["entries"]) == 2
+    # 图片版不展示原文（原文在邮件/Markdown），entries 置空
+    assert section["themes"][0]["entries"] == []
     assert section["entries"] == []
     # 条目 4,5 未归入任何主题 → 游离
     assert len(section["orphans"]) == 2
