@@ -83,12 +83,17 @@ class SkGateway:
     # ------------------------------------------------------------------
 
     async def start(self) -> bool:
-        """启动服务。master key 未配置返回 False（不启动）。"""
+        """启动服务。master key 未配置返回 False（不启动）。
+
+        幂等：已有活跃 runner 时先停旧的再起（防重复初始化导致端口 bind 冲突）。
+        """
         if not self._master_key:
             logger.warning(
                 "[SkGateway] gateway_master_key 未配置，SK 聚合网关不启动"
             )
             return False
+        if self._runner:
+            await self.stop()
         self._runner = web.AppRunner(self._build_app(), access_log=None)
         await self._runner.setup()
         self._site = web.TCPSite(self._runner, self._host, self._port)

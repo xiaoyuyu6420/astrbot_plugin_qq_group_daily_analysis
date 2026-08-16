@@ -212,12 +212,13 @@ class GroupDailyAnalysis(Star):
     async def _run_initialization(self, source: str):
         """统一初始化逻辑"""
         async with self._init_lock:
-            # 如果已经成功发现过平台，且不是来自 Platform Loaded 的强制触发，则跳过
+            # 已成功初始化且平台已发现 → 任何来源都不重跑。
+            # （原先 "Platform Loaded" 来源无条件放行，导致构造期初始化 +
+            # 平台加载 hook 双跑：定时任务重复注册、网关端口 bind 冲突）
             if (
                 self._initialized
                 and self.bot_manager
                 and self.bot_manager.get_platform_count() > 0
-                and source != "Platform Loaded"
             ):
                 return
 
