@@ -5,7 +5,10 @@
 - 原子写（tmp + rename），并发读安全
 - 按 (sk, base_url) 去重，重复命中只刷新来源与时间
 - 容量上限滚动淘汰最旧（default 200）
-- 状态机：unverified（未用过）→ usable（转发成功过）→ dead（连续失败被踢）
+- 状态机（冷却制，借鉴 9router/new-api：失败只定时拉黑，不永久踢死）：
+    unverified（未用过）→ usable（转发成功过）→ dead（冷却中，到期自动回 unverified）
+  冷却时长按失败类型分级：鉴权失败长冷却、限流指数退避、瞬态错误短冷却。
+  转发成功即完全复活（清零计数与冷却）。
 """
 
 from __future__ import annotations
@@ -23,11 +26,17 @@ _STATUS_UNVERIFIED = "unverified"
 _STATUS_USABLE = "usable"
 _STATUS_DEAD = "dead"
 
-# 连续失败多少次标记 dead（懒验证：不主动联网验真，转发失败才踢）
-_DEAD_AFTER_FAILS = 2
+# 失败类型 → 冷却策略（秒）。401/403 多为临时风控/中转站抽风而非密钥真死，
+# 长冷却而非永久踢，给"重启才能复活"的池子留自愈路径。
+_COOLDOWN_AUTH = 30 * 60  # 401/403：30 分钟
+_COOLDOWN_TRANSIENT = 30  # 5xx/网络/超时：30 秒
+_COOLDOWN_RATE_BASE = 30  # 429：指数退避 30s→封顶 5min（key 活着只是限流）
+_COOLDOWN_RATE_MAX = 5 * 60
 # 网关默认 base_url 推断规则（sk- 前缀 → 官方端点）
+# 注意：不推断 sk-ant-（Anthropic 官方是 /v1/messages 协议，不是 OpenAI 兼容的
+# /v1/chat/completions，网关转发必败还白白把 key 踢成 dead）。
+# sk-ant- 只能等 LLM 提取到 OpenAI 兼容中转站地址时才入渠道。
 _BASE_HINTS: tuple[tuple[str, str], ...] = (
-    ("sk-ant-", "https://api.anthropic.com"),
     ("sk-proj-", "https://api.openai.com"),
 )
 
@@ -117,6 +126,7 @@ class SkPool:
                     "base_url": base_url,
                     "status": _STATUS_UNVERIFIED,
                     "fail_count": 0,
+                    "cooldown_until": 0,
                     "first_seen": now,
                     "last_used": 0,
                     "source_group": source_group,
@@ -131,51 +141,84 @@ class SkPool:
             return True
 
     def mark_success(self, sk: str, base_url: str) -> None:
-        """转发成功：置 usable，清零失败计数。"""
+        """转发成功：置 usable，清零失败计数与冷却（成功即完全复活）。"""
         now = int(time.time())
         with self._lock:
             for entry in self._entries:
                 if entry.get("sk") == sk and entry.get("base_url") == base_url:
                     entry["status"] = _STATUS_USABLE
                     entry["fail_count"] = 0
+                    entry["cooldown_until"] = 0
                     entry["last_used"] = now
                     self._persist()
                     return
 
-    def mark_failure(
-        self, sk: str, base_url: str, fatal: bool = False
-    ) -> bool:
-        """转发失败：计数 +1；fatal（401/403 密钥本身无效）直接标记 dead。返回是否已 dead。"""
+    def mark_failure(self, sk: str, base_url: str, kind: str = "transient") -> None:
+        """转发失败：按失败类型进冷却（dead = 冷却中，到期自动复活）。
+
+        kind: "auth"（401/403）| "rate_limit"（429）| "transient"（5xx/网络/超时）
+        """
         with self._lock:
             for entry in self._entries:
                 if entry.get("sk") == sk and entry.get("base_url") == base_url:
-                    if fatal:
-                        entry["status"] = _STATUS_DEAD
-                        logger.info(f"[SkPool] {sk[:12]}... 鉴权失败（401/403），标记失效")
+                    fails = int(entry.get("fail_count", 0)) + 1
+                    entry["fail_count"] = fails
+                    if kind == "auth":
+                        cooldown = _COOLDOWN_AUTH
+                        reason = "鉴权失败(401/403)"
+                    elif kind == "rate_limit":
+                        cooldown = min(
+                            _COOLDOWN_RATE_BASE * (2 ** (fails - 1)),
+                            _COOLDOWN_RATE_MAX,
+                        )
+                        reason = f"限流(429)第{fails}次"
                     else:
-                        entry["fail_count"] = int(entry.get("fail_count", 0)) + 1
-                        if entry["fail_count"] >= _DEAD_AFTER_FAILS:
-                            entry["status"] = _STATUS_DEAD
-                            logger.info(
-                                f"[SkPool] {sk[:12]}... 连续失败 {entry['fail_count']} 次，标记失效"
-                            )
+                        cooldown = _COOLDOWN_TRANSIENT
+                        reason = "瞬态错误"
+                    entry["status"] = _STATUS_DEAD
+                    entry["cooldown_until"] = int(time.time()) + cooldown
+                    logger.info(
+                        f"[SkPool] {sk[:12]}... {reason}，冷却 {cooldown}s 后自动复活"
+                    )
                     self._persist()
-                    return entry["status"] == _STATUS_DEAD
-        return False
+                    return
 
     def next_candidates(self) -> list[dict[str, Any]]:
-        """渠道选择顺序：usable（最近最少用）→ unverified（先来先用）→ dead 排除。"""
+        """渠道选择顺序：usable（最近最少用）→ unverified（先来先用）。
+
+        冷却到期的 dead 渠道惰性复活为 unverified（只改内存不落盘——
+        重启后 cooldown_until 已过期，同样会在此复活，无损失）。
+        复活不清零 fail_count：持续 429 的渠道退避时长要继续增长，
+        只有转发成功（mark_success）才完全清零。
+        """
+        now = int(time.time())
         with self._lock:
-            usable = [
-                e for e in self._entries if e.get("status") == _STATUS_USABLE
-            ]
-            unverified = [
-                e for e in self._entries
-                if e.get("status") == _STATUS_UNVERIFIED
-            ]
+            usable = []
+            unverified = []
+            for e in self._entries:
+                status = e.get("status")
+                if status == _STATUS_DEAD and int(e.get("cooldown_until", 0)) <= now:
+                    e["status"] = _STATUS_UNVERIFIED
+                    status = _STATUS_UNVERIFIED
+                if status == _STATUS_USABLE:
+                    usable.append(e)
+                elif status == _STATUS_UNVERIFIED:
+                    unverified.append(e)
         usable.sort(key=lambda e: e.get("last_used", 0))
         unverified.sort(key=lambda e: e.get("first_seen", 0))
         return usable + unverified
+
+    def earliest_revival(self) -> int:
+        """全池冷却时，最早复活的 Unix 时间戳（0 = 无冷却渠道）。用于 503 Retry-After。"""
+        now = int(time.time())
+        with self._lock:
+            pending = [
+                int(e.get("cooldown_until", 0))
+                for e in self._entries
+                if e.get("status") == _STATUS_DEAD
+                and int(e.get("cooldown_until", 0)) > now
+            ]
+        return min(pending) if pending else 0
 
     def stats(self) -> dict[str, int]:
         with self._lock:

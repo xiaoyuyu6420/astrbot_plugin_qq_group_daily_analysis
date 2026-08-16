@@ -940,7 +940,7 @@
     "sk_gateway": {
         "description": "SK 聚合网关（把监控抓到的 API Key 聚合成 OpenAI 兼容接口，类似轻量 9router/newapi）",
         "type": "object",
-        "hint": "【可选】监控命中 sk- 密钥后自动写入 key 池，网关把池子聚合成一个 OpenAI 兼容地址供你本地工具使用。\n用法：开 gateway_enabled + 填 gateway_master_key（你的访问密码），客户端连 http://<服务器IP>:<端口>/v1，Authorization 填 Bearer <master_key>。\n渠道懒验证：不主动联网验真（不暴露服务器 IP），转发失败自动换下一个 key，连续失败自动踢出。\n注意：网关消耗的是群友分享的 key 的额度，请只给自己用，别把端口暴露到公网。",
+        "hint": "【可选】监控命中 sk- 密钥后自动写入 key 池，网关把池子聚合成一个 OpenAI 兼容地址供你本地工具使用。\n用法：开 gateway_enabled + 填 gateway_master_key（你的访问密码），客户端连 http://<服务器IP>:<端口>/v1，Authorization 填 Bearer <master_key>。\n渠道懒验证：不主动联网验真（不暴露服务器 IP），转发失败自动换下一个 key；失败渠道分级冷却（401/402 半小时、429 指数退避、5xx 半分钟），到期自动复活，成功即完全恢复。\n注意：网关消耗的是群友分享的 key 的额度，请只给自己用，别把端口暴露到公网。",
         "items": {
             "gateway_enabled": {
                 "type": "bool",
