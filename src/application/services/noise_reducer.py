@@ -34,6 +34,7 @@ class NoiseReducer:
     # 内置正则 category → 优先级映射（正则命中名，与 intel_taxonomy 的 channel id 语义不同）
     CATEGORY_PRIORITY: dict[str, str] = {
         "API Key": PRIORITY_CRITICAL,
+        "疑似密钥": PRIORITY_NORMAL,  # 裸 hex/base64 形态命中（低置信，须 LLM 确认）
         "资源链接": PRIORITY_NORMAL,
         "渠道": PRIORITY_NORMAL,
         "关键词": PRIORITY_NORMAL,

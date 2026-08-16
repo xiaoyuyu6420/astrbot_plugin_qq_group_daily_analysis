@@ -51,7 +51,7 @@ from .noise_reducer import NoiseReducer
 # 关键词即时模式：内置正则规则
 # ============================================================
 
-# (pattern, category, description)
+# (pattern, category, description) —— 标准前缀 key（正则即高置信，critical 秒推）
 BUILTIN_PATTERNS: list[tuple[re.Pattern, str, str]] = [
     # ── API key / Token 类 ──
     (re.compile(r"sk-[A-Za-z0-9_-]{20,}"), "API Key", "疑似 OpenAI Key"),
@@ -59,13 +59,50 @@ BUILTIN_PATTERNS: list[tuple[re.Pattern, str, str]] = [
     (re.compile(r"gh[pousr]_[A-Za-z0-9]{36,}"), "API Key", "疑似 GitHub Token"),
     (re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}"), "API Key", "疑似 Slack Token"),
     (re.compile(r"AKIA[A-Z0-9]{16}"), "API Key", "疑似 AWS Access Key"),
-    (re.compile(r"[A-Fa-f0-9]{32,}"), "API Key", "疑似 hex 密钥串"),
-    (re.compile(r"[A-Za-z0-9+/]{40,}={0,2}"), "API Key", "疑似 base64 密钥串"),
     # ── 资源链接类（收紧：keyword 模式不命中裸网址，避免普通分享刷屏）──
     (re.compile(r"magnet:\?\S+", re.IGNORECASE), "资源链接", "磁力链接"),
     (re.compile(r"(?:提取码|访问码|密码)\s*[:：]\s*\S+", re.IGNORECASE), "资源链接", "网盘提取码"),
     (re.compile(r"(?:邀请码|邀请|邀请链接)\s*[:：]?\s*\S{4,}", re.IGNORECASE), "渠道", "邀请码"),
 ]
+
+# ── 裸密钥形态（低置信：仅凭"像随机串"不能确认，必须过 LLM 确认才推送）──
+# 要求独立 token：前后不是字母数字（hex）/ 不是字母数字+/=.（base64，
+# 排除 URL 的路径与参数段、单词中段）。
+_FUZZY_HEX_RE = re.compile(r"(?<![0-9A-Za-z])[0-9A-Fa-f]{32,}(?![0-9A-Za-z])")
+_FUZZY_B64_RE = re.compile(r"(?<![0-9A-Za-z+/=.])[A-Za-z0-9+/]{40,}={0,2}(?![0-9A-Za-z+/=])")
+
+
+def _fuzzy_key_hits(text: str) -> list[tuple[str, str]]:
+    """裸 hex/base64 密钥形态扫描（误伤重灾区，规则收紧）。
+
+    排除项（都是群聊常见内容，不是 key）：
+    - 纯数字串：订单号/号码连拼/验证码轰炸
+    - 磁力链 info hash（btih）：由"资源链接"类负责
+    - base64 但非大小写+数字混合：纯字母刷屏、单词串、标语
+    - URL 路径/参数段：由 lookbehind 排除（前面是 / . = ? 等）
+    命中仅代表形态像 → "疑似密钥"类（normal），必须过 LLM 确认。
+    """
+    hits: list[tuple[str, str]] = []
+    low = text.lower()
+    for m in _FUZZY_HEX_RE.finditer(text):
+        tok = m.group(0)
+        if tok.isdigit():
+            continue
+        if "btih" in low[max(0, m.start() - 10) : m.start() + 4]:
+            continue
+        hits.append(("疑似密钥", "疑似裸 hex 密钥串"))
+        break
+    for m in _FUZZY_B64_RE.finditer(text):
+        tok = m.group(0)
+        if not (
+            any(c.isdigit() for c in tok)
+            and any(c.islower() for c in tok)
+            and any(c.isupper() for c in tok)
+        ):
+            continue
+        hits.append(("疑似密钥", "疑似裸 base64 密钥串"))
+        break
+    return hits
 
 # 裸网址：仅 window/cross_group（整窗摘要）模式命中。
 # keyword 模式不匹配它——普通分享（GitHub/官网/镜像地址）会刷屏且每条约 1 次 LLM 确认。
@@ -76,7 +113,14 @@ _KW_LLM_SYSTEM_PROMPT = (
     "你是一个信息价值判断助手。给你一条群聊消息，判断它是否含有"
     "「可行动的有价值信息」（如可用 API key、可下载资源、具体商机、"
     "一手情报、可直接照做的干货方法）。"
-    "忽略闲聊、灌水、玩梗、情绪宣泄。宁缺毋滥。"
+    "忽略闲聊、灌水、玩梗、情绪宣泄。宁缺毋滥。\n"
+    "密钥/token 判定标准（从严，拿不准就判 false）：\n"
+    "- 是真 key：独立成段的随机字符串（通常 32 位以上、字母数字大小写混杂），"
+    "且上下文有分享意图（出现 key/密钥/token/api/中转/白嫖/额度/分享/接码 等词，"
+    "或明确说'给大家用的'）\n"
+    "- 不是 key（判 useful=false）：文件校验值（上下文是 sha256/md5/校验/截图/种子），"
+    "磁力链接 hash，长数字串（订单号/QQ号/手机号/验证码），URL 及其参数段，"
+    "代码片段里的变量名或哈希，版本号，图片/文件 base64 数据，加密货币地址的普通转账"
 )
 
 # sk 密钥专项分析 prompt（命中 API Key 正则后调用，分析平台/来源/可信度）
@@ -267,6 +311,16 @@ class MessageMonitorService:
         is_critical_hit = any(c == "API Key" for c, _ in hits)
 
         # 第二层：LLM 确认（可选，仅 normal 类）
+        # 裸密钥形态（"疑似密钥"）低置信：必须过 LLM 确认才推；
+        # LLM 确认未开/不可用时宁可漏推不误推，直接丢弃
+        fuzzy_only = bool(hits) and all(c == "疑似密钥" for c, _ in hits)
+        if not is_critical_hit and fuzzy_only:
+            if not self.config_manager.is_llm_confirm_enabled():
+                logger.debug(
+                    f"[Monitor-KW] {sender_id}@{group_id} 疑似密钥形态命中但 LLM 确认未开，丢弃"
+                )
+                return
+
         verdict = None
         if not is_critical_hit and self.config_manager.is_llm_confirm_enabled():
             verdict = await self._llm_confirm_keyword(sender_id, sender_name, text)
@@ -373,6 +427,9 @@ class MessageMonitorService:
         if self.config_manager.get_monitor_mode() != "keyword":
             if _URL_PATTERN.search(text):
                 hits.append(("资源链接", "包含网址"))
+        else:
+            # 裸密钥形态只在 keyword 即时模式扫（低置信，须 LLM 确认）
+            hits.extend(_fuzzy_key_hits(text))
         for kw in self.config_manager.get_monitor_extra_keywords():
             kw = str(kw).strip()
             if kw and kw in text:
