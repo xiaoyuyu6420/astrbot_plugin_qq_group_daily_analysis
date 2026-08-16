@@ -313,7 +313,7 @@ async def test_keyword_sk_hit_alert_contains_verify_field():
     assert "可信度：高" in alert
     assert "✅ 验真" in alert
     assert "有效" in alert
-    assert "疑似真实密钥" in alert
+    assert "疑似真实密钥" not in alert  # 备注行已精简掉
     svc.stop()
 
 

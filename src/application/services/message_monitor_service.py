@@ -217,10 +217,7 @@ class MessageMonitorService:
             # 按模式分流
             mode = self.config_manager.get_monitor_mode()
             if mode == "keyword":
-                logger.info(
-                    f"[Monitor] 收到监控群消息 group={group_id} sender={sender_id} "
-                    f"len={len(text)}，进入关键词判定"
-                )
+                logger.debug(f"[Monitor] 收到监控群消息 group={group_id} len={len(text)}")
                 await self._process_keyword(event, sender_id, group_id, text)
             else:
                 await self._process_window(event, sender_id, group_id, text)
@@ -260,10 +257,6 @@ class MessageMonitorService:
         hits = self._regex_scan(text)
         if not hits:
             return  # 绝大多数消息在这里被丢弃
-        logger.info(
-            f"[Monitor-KW] 命中 {sender_id}@{group_id}: "
-            f"{'、'.join(c for c, _ in hits)}"
-        )
 
         sender_name = self._safe_sender_name(event, sender_id)
         platform_id = str(event.get_platform_id() or "").strip()
@@ -286,7 +279,8 @@ class MessageMonitorService:
         # 第三层：优先级分级
         priority = self._noise_reducer.classify_priority(hits, verdict)
         logger.info(
-            f"[Monitor-KW] {sender_id}@{group_id} 命中，优先级={priority}"
+            f"[Monitor-KW] 命中 {sender_id}@{group_id}: "
+            f"{'、'.join(sorted({c for c, _ in hits}))} 优先级={priority}"
         )
 
         if priority == NoiseReducer.PRIORITY_LOW:
@@ -514,7 +508,7 @@ class MessageMonitorService:
             )
 
         hit_details = "、".join(desc for _, desc in hits[:3])
-        content_display = text if len(text) <= 800 else text[:800] + " …(截断)"
+        content_display = text if len(text) <= 400 else text[:400] + " …(截断)"
 
         # sk 专项分析 + 验真结果（仅密钥类命中时追加）
         sk_lines = ""
@@ -522,34 +516,25 @@ class MessageMonitorService:
             platform = sk_analysis.get("platform", "不确定")
             source_url = sk_analysis.get("source_url", "")
             confidence = sk_analysis.get("confidence", "")
-            note = sk_analysis.get("note", "")
             conf_map = {"high": "高", "medium": "中", "low": "低"}
             conf_str = conf_map.get(confidence, confidence)
             sk_lines += f"🔬 平台：{platform}（可信度：{conf_str}）\n"
             if source_url:
                 sk_lines += f"🌐 来源：{source_url}\n"
-            if note:
-                sk_lines += f"📌 备注：{note}\n"
         if verify_result is not None:
             from ...infrastructure.messaging.sk_verifier import format_verify_result
             verify_str = format_verify_result(verify_result)
             sk_lines += f"✅ 验真：{verify_str}\n"
 
         alert = (
-            f"🚨 关键词命中预警\n"
-            f"━━━━━━━━━━━━━\n"
-            f"👤 来源：{sender_name} ({sender_id})\n"
-            f"📍 群：{group_id}\n"
-            f"🏷️ 类别：{category_str}\n"
-            f"💡 判断：{reason or hit_details}\n"
+            f"🚨 关键词命中预警〔{category_str}〕\n"
+            f"👤 {sender_name} ({sender_id}) @ 群 {group_id}\n"
+            f"💡 {reason or hit_details}\n"
         )
         if sk_lines:
             alert += sk_lines
         alert += (
-            f"\n"
             f"📝 原文：\n{content_display}\n"
-            f"\n"
-            f"━━━━━━━━━━━━━\n"
             f"⏰ {_tz_now().strftime('%Y-%m-%d %H:%M:%S')}"
         )
 
@@ -1000,14 +985,13 @@ class MessageMonitorService:
                 ok = await adapter.send_private(user_id=qq, text=alert)
                 if ok:
                     success += 1
-                    extra = f"（{context_desc}）" if context_desc else ""
-                    logger.info(f"[Monitor] 已推送给 {qq}{extra}")
                 else:
                     logger.warning(f"[Monitor] 推送 {qq} 失败（可能是非好友）")
             except Exception as e:
                 logger.error(f"[Monitor] 推送 {qq} 异常: {e}")
 
-        logger.info(f"[Monitor] 推送完成：成功 {success}/{len(targets)}")
+        extra = f"（{context_desc}）" if context_desc else ""
+        logger.info(f"[Monitor] 推送完成：成功 {success}/{len(targets)}{extra}")
 
     def _get_all_platform_ids(self) -> list[str]:
         """获取所有已注册的平台 ID（兜底用）。"""
