@@ -473,7 +473,9 @@ class MessageMonitorService:
         pool = self.sk_pool
         if pool is None:
             return
+        # sk-（OpenAI/Claude/中转站）+ AIza（Google）——网关都有对应原生端点可透传
         keys = re.findall(r"sk-[A-Za-z0-9_-]{20,}", text or "")
+        keys += re.findall(r"AIza[A-Za-z0-9_-]{35}", text or "")
         if not keys:
             return
         for sk in dict.fromkeys(keys):

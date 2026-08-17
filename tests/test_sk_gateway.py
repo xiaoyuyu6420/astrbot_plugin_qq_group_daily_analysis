@@ -37,12 +37,51 @@ def test_pool_add_dedup_and_infer_base_url(tmp_path):
     entry = pool.entries()[0]
     assert entry["base_url"] == _OPENAI  # sk-proj- → OpenAI 官方
     assert entry["status"] == "unverified"
-    # sk-ant- 不推断（Anthropic 官方非 OpenAI 兼容协议，等中转站地址）
+    # sk-ant- → Anthropic 官方（原生 /v1/messages 端点透传）
     pool.add(_SK_C)
-    assert pool.entries()[1]["base_url"] == ""
+    assert pool.entries()[1]["base_url"] == "https://api.anthropic.com"
     # 显式中转站地址优先于推断
     pool.add(_SK_B, base_url="https://api.example.com")
     assert pool.entries()[2]["base_url"] == "https://api.example.com"
+
+
+def test_pool_protocol_inference(tmp_path):
+    """协议推断：sk-proj-→openai、sk-ant-→anthropic、AIza→gemini。"""
+    pool = _pool(tmp_path)
+    pool.add("sk-proj-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    pool.add("sk-ant-cccccccccccccccccccccccccccccccccccccccc")
+    pool.add("AIzaSyD-5aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789-abc")
+    by_sk = {e["sk"][:6]: e for e in pool.entries()}
+    assert by_sk["sk-pro"]["protocol"] == "openai"
+    assert by_sk["sk-ant"]["protocol"] == "anthropic"
+    assert by_sk["AIzaSy"]["protocol"] == "gemini"
+    # 显式中转站地址但域名含 anthropic.com → anthropic
+    pool.add("sk-123456789012345678901234567890123456789012", base_url="https://api.anthropic.com")
+    assert pool.entries()[-1]["protocol"] == "anthropic"
+
+
+def test_pool_old_data_migration(tmp_path):
+    """旧数据无 protocol 字段 → 加载时按前缀/域名补齐。"""
+    import json as _json
+    path = str(tmp_path / "sk.json")
+    _json.dump([{"sk": "sk-ant-cccccccccccccccccccccccccccccccccccccccc",
+                 "base_url": "https://api.anthropic.com", "status": "usable"}], open(path, "w"))
+    pool = SkPool(path)
+    assert pool.entries()[0]["protocol"] == "anthropic"
+
+
+def test_next_candidates_protocol_filter(tmp_path):
+    """next_candidates(protocol) 只返回同协议渠道。"""
+    pool = _pool(tmp_path)
+    pool.add("sk-proj-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", base_url=_OPENAI)
+    pool.add("sk-ant-cccccccccccccccccccccccccccccccccccccccc")
+    pool.add("AIzaSyD-5aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789-abc")
+    openai_only = [e["sk"] for e in pool.next_candidates("openai")]
+    assert len(openai_only) == 1 and openai_only[0].startswith("sk-proj")
+    anthropic_only = [e["sk"] for e in pool.next_candidates("anthropic")]
+    assert len(anthropic_only) == 1 and anthropic_only[0].startswith("sk-ant")
+    gemini_only = [e["sk"] for e in pool.next_candidates("gemini")]
+    assert len(gemini_only) == 1 and gemini_only[0].startswith("AIza")
 
 
 def test_pool_rollover_drops_oldest(tmp_path):
@@ -205,6 +244,7 @@ def test_gateway_no_master_key_does_not_start(tmp_path):
 def test_gateway_models_with_auth(tmp_path):
     async def body():
         pool = _pool(tmp_path)
+        pool.add(_SK_A, base_url=_OPENAI)
         client, _ = await _make_client(pool)
         try:
             resp = await client.get(
@@ -213,6 +253,8 @@ def test_gateway_models_with_auth(tmp_path):
             assert resp.status == 200
             data = await resp.json()
             assert data["object"] == "list" and len(data["data"]) > 0
+            ids = {m["id"] for m in data["data"]}
+            assert "gpt-4o" in ids
         finally:
             await client.close()
 
@@ -483,3 +525,154 @@ def test_pool_revival_keeps_backoff_progress(tmp_path):
     pool.mark_failure(_SK_A, _OPENAI, kind="rate_limit")  # 第 2 次：60s
     left2 = pool._entries[0]["cooldown_until"] - int(_time.time())
     assert left2 > 30  # 退避在累计，不是回到 30s 起点
+
+
+# ---------------------------------------------------------------------------
+# 多协议原生端点（Anthropic / Gemini）
+# ---------------------------------------------------------------------------
+
+_ANTH_KEY = "sk-ant-cccccccccccccccccccccccccccccccccccccccc"
+_GEM_KEY = "AIzaSyD-5aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789-abc"
+
+
+def test_gateway_messages_passthrough(tmp_path):
+    """/v1/messages 透传 Anthropic 渠道：x-api-key + anthropic-version 头。"""
+
+    async def body():
+        pool = _pool(tmp_path)
+        pool.add(_ANTH_KEY)  # 推断 anthropic 协议 + 官方端点
+        client, gw = await _make_client(pool)
+        gw._session = _mock_session(_mock_http_response(200))
+        gw._session_or_create = lambda: gw._session
+        try:
+            resp = await client.post(
+                "/v1/messages",
+                headers={"Authorization": "Bearer mk-test", "anthropic-version": "2023-06-01"},
+                json={"model": "claude-sonnet-4-5", "max_tokens": 100, "messages": [{"role": "user", "content": "hi"}]},
+            )
+            assert resp.status == 200
+            call = gw._session.post.call_args
+            # 上游地址 = 渠道 base + /v1/messages（url 是位置参数）
+            assert call.args[0] == "https://api.anthropic.com/v1/messages"
+            # 换头：x-api-key 用渠道 key，anthropic-version 透传
+            assert call.kwargs["headers"]["x-api-key"] == _ANTH_KEY
+            assert call.kwargs["headers"]["anthropic-version"] == "2023-06-01"
+            assert pool.stats()["usable"] == 1
+        finally:
+            await client.close()
+
+    _run(body())
+
+
+def test_gateway_messages_skips_non_anthropic_channels(tmp_path):
+    """/v1/messages 只路由 anthropic 渠道：池里只有 openai 渠道 → 503。"""
+
+    async def body():
+        pool = _pool(tmp_path)
+        pool.add(_SK_A, base_url=_OPENAI)
+        client, _ = await _make_client(pool)
+        try:
+            resp = await client.post(
+                "/v1/messages",
+                headers={"Authorization": "Bearer mk-test"},
+                json={"model": "claude-3-5-sonnet", "messages": []},
+            )
+            assert resp.status == 503
+            data = await resp.json()
+            assert "anthropic" in data["error"]["message"]
+        finally:
+            await client.close()
+
+    _run(body())
+
+
+def test_gateway_gemini_passthrough(tmp_path):
+    """/v1beta/models/{m}:generateContent 透传：路径拼接 + x-goog-api-key。"""
+
+    async def body():
+        pool = _pool(tmp_path)
+        pool.add(_GEM_KEY)
+        client, gw = await _make_client(pool)
+        gw._session = _mock_session(
+            _mock_http_response(200, {"candidates": [{"content": {"parts": [{"text": "hi"}]}}]})
+        )
+        gw._session_or_create = lambda: gw._session
+        try:
+            resp = await client.post(
+                "/v1beta/models/gemini-2.0-flash:generateContent?alt=json",
+                headers={"Authorization": "Bearer mk-test"},
+                json={"contents": [{"role": "user", "parts": [{"text": "hi"}]}]},
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["candidates"][0]["content"]["parts"][0]["text"] == "hi"
+            call = gw._session.post.call_args
+            assert call.args[0] == (
+                "https://generativelanguage.googleapis.com/v1beta/models/"
+                "gemini-2.0-flash:generateContent?alt=json"
+            )
+            assert call.kwargs["headers"]["x-goog-api-key"] == _GEM_KEY
+            assert pool.stats()["usable"] == 1
+        finally:
+            await client.close()
+
+    _run(body())
+
+
+def test_gateway_gemini_auth_via_goog_header(tmp_path):
+    """Gemini SDK 用 x-goog-api-key 带 master key 也能通过鉴权。"""
+
+    async def body():
+        pool = _pool(tmp_path)
+        pool.add(_GEM_KEY)
+        client, _ = await _make_client(pool)
+        try:
+            resp = await client.get("/healthz", headers={"x-goog-api-key": "mk-test"})
+            assert resp.status == 200  # 鉴权通过（healthz 无需鉴权但先验路径）
+            resp2 = await client.get("/v1/models", headers={"x-goog-api-key": "mk-test"})
+            assert resp2.status == 200
+            resp3 = await client.get("/v1/models", headers={"x-goog-api-key": "wrong"})
+            assert resp3.status == 401
+        finally:
+            await client.close()
+
+    _run(body())
+
+
+def test_gateway_models_dynamic_aggregation(tmp_path):
+    """/v1/models 按池内协议动态聚合。"""
+
+    async def body():
+        pool = _pool(tmp_path)
+        pool.add(_ANTH_KEY)
+        client, _ = await _make_client(pool)
+        try:
+            resp = await client.get(
+                "/v1/models", headers={"Authorization": "Bearer mk-test"}
+            )
+            data = await resp.json()
+            ids = {m["id"] for m in data["data"]}
+            assert "claude-sonnet-4-5-20250929" in ids  # anthropic 渠道 → claude 系
+            assert "gpt-4o" not in ids  # 无 openai 渠道 → 不列 gpt
+        finally:
+            await client.close()
+
+    _run(body())
+
+
+def test_gateway_models_empty_pool_returns_empty(tmp_path):
+    """空池 → /v1/models 空名单（诚实，不列假模型）。"""
+
+    async def body():
+        pool = _pool(tmp_path)
+        client, _ = await _make_client(pool)
+        try:
+            resp = await client.get(
+                "/v1/models", headers={"Authorization": "Bearer mk-test"}
+            )
+            data = await resp.json()
+            assert data["data"] == []
+        finally:
+            await client.close()
+
+    _run(body())

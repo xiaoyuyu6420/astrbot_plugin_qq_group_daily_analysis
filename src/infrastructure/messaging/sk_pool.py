@@ -26,27 +26,40 @@ _STATUS_UNVERIFIED = "unverified"
 _STATUS_USABLE = "usable"
 _STATUS_DEAD = "dead"
 
+# 渠道协议：决定网关用哪个原生端点透传（不做协议翻译，零损耗）
+_PROTOCOL_OPENAI = "openai"        # /v1/chat/completions + Bearer（官方与中转站）
+_PROTOCOL_ANTHROPIC = "anthropic"  # /v1/messages + x-api-key
+_PROTOCOL_GEMINI = "gemini"        # /v1beta/models/{m}:generateContent + x-goog-api-key
+
 # 失败类型 → 冷却策略（秒）。401/403 多为临时风控/中转站抽风而非密钥真死，
 # 长冷却而非永久踢，给"重启才能复活"的池子留自愈路径。
 _COOLDOWN_AUTH = 30 * 60  # 401/403：30 分钟
 _COOLDOWN_TRANSIENT = 30  # 5xx/网络/超时：30 秒
 _COOLDOWN_RATE_BASE = 30  # 429：指数退避 30s→封顶 5min（key 活着只是限流）
 _COOLDOWN_RATE_MAX = 5 * 60
-# 网关默认 base_url 推断规则（sk- 前缀 → 官方端点）
-# 注意：不推断 sk-ant-（Anthropic 官方是 /v1/messages 协议，不是 OpenAI 兼容的
-# /v1/chat/completions，网关转发必败还白白把 key 踢成 dead）。
-# sk-ant- 只能等 LLM 提取到 OpenAI 兼容中转站地址时才入渠道。
-_BASE_HINTS: tuple[tuple[str, str], ...] = (
-    ("sk-proj-", "https://api.openai.com"),
+# 网关默认 base_url 推断规则（sk 前缀 → 官方端点 + 协议）
+_BASE_HINTS: tuple[tuple[str, str, str], ...] = (
+    ("sk-proj-", "https://api.openai.com", _PROTOCOL_OPENAI),
+    ("sk-ant-", "https://api.anthropic.com", _PROTOCOL_ANTHROPIC),
+    ("AIza", "https://generativelanguage.googleapis.com", _PROTOCOL_GEMINI),
 )
 
 
 def _infer_base_url(sk: str) -> str:
     """按 sk 前缀推断官方端点；返回空串表示无法推断（等 LLM 提取的中转站地址）。"""
-    for prefix, base in _BASE_HINTS:
+    for prefix, base, _proto in _BASE_HINTS:
         if sk.startswith(prefix):
             return base
     return ""
+
+
+def _infer_protocol(sk: str, base_url: str) -> str:
+    """按 sk 前缀 / base_url 域名推断渠道协议（决定网关透传到哪个原生端点）。"""
+    if sk.startswith("sk-ant-") or "anthropic.com" in (base_url or ""):
+        return _PROTOCOL_ANTHROPIC
+    if sk.startswith("AIza") or "googleapis.com" in (base_url or ""):
+        return _PROTOCOL_GEMINI
+    return _PROTOCOL_OPENAI
 
 
 class SkPool:
@@ -73,6 +86,10 @@ class SkPool:
         except Exception as e:
             logger.warning(f"[SkPool] 加载失败，按空池启动: {e}")
             self._entries = []
+        # 旧数据迁移：补齐 protocol 字段（改内存即可，下次状态变更会落盘）
+        for e in self._entries:
+            if not e.get("protocol"):
+                e["protocol"] = _infer_protocol(e.get("sk", ""), e.get("base_url", ""))
 
     def _persist(self) -> None:
         try:
@@ -124,6 +141,7 @@ class SkPool:
                 {
                     "sk": sk,
                     "base_url": base_url,
+                    "protocol": _infer_protocol(sk, base_url),
                     "status": _STATUS_UNVERIFIED,
                     "fail_count": 0,
                     "cooldown_until": 0,
@@ -183,9 +201,10 @@ class SkPool:
                     self._persist()
                     return
 
-    def next_candidates(self) -> list[dict[str, Any]]:
+    def next_candidates(self, protocol: str | None = None) -> list[dict[str, Any]]:
         """渠道选择顺序：usable（最近最少用）→ unverified（先来先用）。
 
+        protocol 指定时只返回该协议的渠道（网关各原生端点只路由同协议渠道）。
         冷却到期的 dead 渠道惰性复活为 unverified（只改内存不落盘——
         重启后 cooldown_until 已过期，同样会在此复活，无损失）。
         复活不清零 fail_count：持续 429 的渠道退避时长要继续增长，
@@ -196,6 +215,8 @@ class SkPool:
             usable = []
             unverified = []
             for e in self._entries:
+                if protocol and e.get("protocol", _PROTOCOL_OPENAI) != protocol:
+                    continue
                 status = e.get("status")
                 if status == _STATUS_DEAD and int(e.get("cooldown_until", 0)) <= now:
                     e["status"] = _STATUS_UNVERIFIED
@@ -207,6 +228,20 @@ class SkPool:
         usable.sort(key=lambda e: e.get("last_used", 0))
         unverified.sort(key=lambda e: e.get("first_seen", 0))
         return usable + unverified
+
+    def active_protocols(self) -> set[str]:
+        """池内可用（非冷却）渠道覆盖的协议集合。/v1/models 动态聚合用。"""
+        now = int(time.time())
+        with self._lock:
+            return {
+                e.get("protocol", _PROTOCOL_OPENAI)
+                for e in self._entries
+                if e.get("base_url")
+                and (
+                    e.get("status") != _STATUS_DEAD
+                    or int(e.get("cooldown_until", 0)) <= now
+                )
+            }
 
     def earliest_revival(self) -> int:
         """全池冷却时，最早复活的 Unix 时间戳（0 = 无冷却渠道）。用于 503 Retry-After。"""
