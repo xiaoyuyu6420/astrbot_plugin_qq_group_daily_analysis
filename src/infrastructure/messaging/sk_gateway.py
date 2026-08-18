@@ -66,6 +66,28 @@ class _ChannelFailed(Exception):
         self.message = message
 
 
+# 各协议默认端点后缀
+_ENDPOINT_SUFFIX = {
+    "chat": "v1/chat/completions",
+    "messages": "v1/messages",
+}
+
+
+def _endpoint_url(base_url: str, kind: str) -> str:
+    """拼接上游完整端点，兼容 base_url 三种形态：
+      https://host/v1                  → /v1/chat/completions（避免 /v1/v1 重复）
+      https://host                     → /v1/chat/completions
+      https://host/v1/chat/completions → 原样（LLM 已给完整路径）
+    """
+    base = (base_url or "").rstrip("/")
+    suffix = _ENDPOINT_SUFFIX[kind]
+    if base.endswith(suffix):
+        return base
+    if base.endswith("/v1"):
+        return f"{base}/{suffix.split('/', 1)[1]}"
+    return f"{base}/{suffix}"
+
+
 class _StreamBroken(Exception):
     """流式转发已开始（响应头已发给客户端）后上游中断。
 
@@ -156,7 +178,7 @@ class SkGateway:
         label = str(body.get("model", "?"))
 
         def url_of(entry: dict[str, Any]) -> str:
-            return f"{entry['base_url'].rstrip('/')}/v1/chat/completions"
+            return _endpoint_url(entry["base_url"], "chat")
 
         def headers_of(entry: dict[str, Any]) -> dict[str, str]:
             return {
@@ -188,7 +210,7 @@ class SkGateway:
             label = "?"
 
         def url_of(entry: dict[str, Any]) -> str:
-            return f"{entry['base_url'].rstrip('/')}/v1/messages"
+            return _endpoint_url(entry["base_url"], "messages")
 
         def headers_of(entry: dict[str, Any]) -> dict[str, str]:
             return {

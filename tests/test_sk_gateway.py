@@ -676,3 +676,32 @@ def test_gateway_models_empty_pool_returns_empty(tmp_path):
             await client.close()
 
     _run(body())
+
+
+# ---------------------------------------------------------------------------
+# 端点拼接（base_url 带 /v1 / 不带 / 已给完整路径）
+# ---------------------------------------------------------------------------
+from src.infrastructure.messaging.sk_gateway import _endpoint_url
+
+
+class TestEndpointUrl:
+    def test_base_with_v1(self):
+        # 中转站 base 自带 /v1 → 不能重复拼
+        assert _endpoint_url("https://ai.centos.hk/v1", "chat") == \
+            "https://ai.centos.hk/v1/chat/completions"
+
+    def test_base_plain(self):
+        assert _endpoint_url("https://api.openai.com", "chat") == \
+            "https://api.openai.com/v1/chat/completions"
+
+    def test_base_has_full_path(self):
+        assert _endpoint_url("https://relay.dev/v1/chat/completions", "chat") == \
+            "https://relay.dev/v1/chat/completions"
+
+    def test_messages_with_v1(self):
+        assert _endpoint_url("https://api.anthropic.com", "messages") == \
+            "https://api.anthropic.com/v1/messages"
+
+    def test_messages_full_path(self):
+        assert _endpoint_url("https://relay.dev/v1/messages", "messages") == \
+            "https://relay.dev/v1/messages"
