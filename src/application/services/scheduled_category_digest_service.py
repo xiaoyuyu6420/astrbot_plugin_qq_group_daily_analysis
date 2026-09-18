@@ -1504,9 +1504,12 @@ hr {{ border:none; border-top:1px solid #e3e6ea; margin:20px 0; }}
                         ),
                         "importance": theme.importance,
                         "tags": theme.tags or [],
-                        # 图片版不展示原文（原文在邮件/Markdown），entries 置空，
-                        # 模板据此跳过 related 渲染 —— 避免图里塞 100 条原文
-                        "entries": [],
+                        # 图片版带出关联原文：结论之外还要能溯源看原话，
+                        # 只留结论会让日报看着「省略好多东西」
+                        "entries": [
+                            ScheduledCategoryDigestService._serialize_entry(item, i)
+                            for i, item in enumerate(theme.related_items, 1)
+                        ],
                     }
                     for theme in digest.themes
                 ],

@@ -269,13 +269,21 @@ def test_email_anchor_and_group_details():
     assert "群975206796" not in html
 
 
-def test_image_payload_theme_has_no_entries():
-    """图片 payload：主题不再携带原文条目（原文进邮件），narrative 已换来源标签。"""
+def test_image_payload_theme_carries_source_entries():
+    """图片 payload：主题带出关联原文（可溯源），narrative 已换来源标签。"""
     svc = _service()
     d = _digest_with_named_items()
     payloads = svc.pack_digests_payload([d], push_mode="split", date_str="2026-08-15")
     theme = payloads[0]["sections"][0]["themes"][0]
-    assert theme["entries"] == []
+    # 主题卡下要能看到原话，否则日报只剩结论、读者无从核对
+    assert [e["content"] for e in theme["entries"]] == [
+        "GLM-5.3 额度 100 刀",
+        "Gemini 3.7 实测 300 token/s",
+        "AstrBot 群 50 人涨到 900",
+    ]
+    assert theme["entries"][0]["source_group_name"] == "雷达群"
+    assert theme["entries"][0]["source_user_name"] == "林然喵"
+    # 摘要里的内部编号仍要换成可读来源
     assert "#[1]" not in theme["narrative"]
     assert "[雷达群·林然喵]" in theme["narrative"]
 

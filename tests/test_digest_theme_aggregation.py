@@ -115,7 +115,7 @@ def test_should_aggregate_false_when_below_threshold():
 
 
 def test_section_from_digest_themes_priority():
-    """有 themes 时渲染聚合主题，entries 留空。"""
+    """有 themes 时渲染聚合主题，主题下带关联原文（可溯源）。"""
     svc = _service()
     items = _make_items(5)
     digest = CategoryDigest(
@@ -144,8 +144,9 @@ def test_section_from_digest_themes_priority():
     assert len(section["themes"]) == 2
     assert section["themes"][0]["title"] == "主题A"
     assert section["themes"][0]["importance"] == "high"
-    # 图片版不展示原文（原文在邮件/Markdown），entries 置空
-    assert section["themes"][0]["entries"] == []
+    # 图片版主题卡带关联原文，读者能溯源看原话
+    assert len(section["themes"][0]["entries"]) == 2
+    assert section["themes"][1]["entries"][0]["content"] == items[2].content
     assert section["entries"] == []
     # 条目 4,5 未归入任何主题 → 游离
     assert len(section["orphans"]) == 2
