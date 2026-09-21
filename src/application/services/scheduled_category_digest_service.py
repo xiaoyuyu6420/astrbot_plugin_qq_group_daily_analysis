@@ -208,13 +208,30 @@ class ScheduledCategoryDigestService:
                 "messages_sent": 0,
             }
 
+        # 日报 QQ 推送闸门：存档模式下跳过渲染与私聊推送（邮件/落盘照常）。
+        # 用户反馈「逐渐懒得看日报」——默认静音，大事才推（条目数阈值），
+        # 每周由周报一次性回顾。
+        total_items = sum(len(d.items) for d in digests)
+        qq_push = True
+        gate = getattr(self.config_manager, "is_daily_qq_push_enabled", None)
+        if callable(gate):
+            try:
+                qq_push = bool(gate(total_items=total_items))
+            except Exception:
+                qq_push = True
+        if not qq_push:
+            logger.info(
+                f"[{trace_id}] 日报存档模式：跳过图片渲染与 QQ 推送 "
+                f"（当日条目 {total_items}，邮件与落盘照常）"
+            )
+
         # 组装 (image_url|None, text_fallback) 列表
         deliveries: list[tuple[str | None, str]] = []
-        if output_format == "image":
+        if qq_push and output_format == "image":
             deliveries = await self._render_image_deliveries(
                 digests, text_messages, push_mode=push_mode, llm_error=llm_error
             )
-        else:
+        elif qq_push:
             deliveries = [(None, msg) for msg in text_messages]
 
         # 预打包 Markdown：合并转发开启时作为文本节点塞进卡片（不单独发文件），
@@ -227,11 +244,15 @@ class ScheduledCategoryDigestService:
             logger.warning(f"[{trace_id}] Markdown 打包失败: {e}")
             md_contents = []
 
-        sent = await self._send_to_admins(
-            deliveries, platform_id=platform_id, md_contents=md_contents or None
-        )
+        sent = 0
+        if qq_push:
+            sent = await self._send_to_admins(
+                deliveries, platform_id=platform_id, md_contents=md_contents or None
+            )
         # Markdown 文件推送（合并转发已带走 md 时跳过 QQ 文件；邮件照发）
-        md_sent = await self._send_markdown_files(digests, push_mode, platform_id)
+        md_sent = await self._send_markdown_files(
+            digests, push_mode, platform_id, allow_qq=qq_push
+        )
         # 落盘：把本次 digest 存到磁盘，失败也不影响推送结果
         digest_path = await self._persist_digests(
             digests, deliveries, sent, llm_error=llm_error
@@ -239,7 +260,9 @@ class ScheduledCategoryDigestService:
         # 清理过期文件
         self._cleanup_old_digests()
         return {
-            "success": sent > 0,
+            # 存档模式下 QQ 不推是预期行为，不算失败
+            "success": sent > 0 or md_sent > 0 or not qq_push,
+            "qq_push": qq_push,
             "digests": digests,
             "messages_sent": sent,
             "message_count": len(deliveries),
@@ -1566,6 +1589,7 @@ hr {{ border:none; border-top:1px solid #e3e6ea; margin:20px 0; }}
         digests: list[CategoryDigest],
         push_mode: str,
         platform_id: str | None,
+        allow_qq: bool = True,
     ) -> int:
         """生成 Markdown 文件 + HTML 邮件，发给管理员。
 
@@ -1573,6 +1597,7 @@ hr {{ border:none; border-top:1px solid #e3e6ea; margin:20px 0; }}
         - QQ 私聊：发 .md 文件（用 adapter.send_private_file）
         - SMTP 邮件：发 HTML 折叠邮件（用户原文默认收起，点击展开）+ .md 附件
 
+        allow_qq=False 时（日报存档模式）跳过 QQ 文件通道，只发邮件。
         失败不影响主推送（图片已发），只打 warning。
         """
         trace_id = TraceContext.get()
@@ -1585,7 +1610,7 @@ hr {{ border:none; border-top:1px solid #e3e6ea; margin:20px 0; }}
             logger.warning(f"[{trace_id}] Markdown 打包失败: {e}")
             md_files = []
 
-        if md_files:
+        if md_files and allow_qq:
             qq_sent = await self._send_md_via_qq(md_files, platform_id)
             sent += qq_sent
 

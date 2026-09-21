@@ -622,6 +622,163 @@ class ConfigManager:
             raw = [raw]
         return [str(x).strip() for x in raw if str(x).strip()]
 
+    # ==================== 采集简报配置 ====================
+
+    def is_collection_digest_enabled(self) -> bool:
+        """采集简报总开关（独立于定时日报）。"""
+        raw = self._get_group("collection_digest").get("enabled", False)
+        if isinstance(raw, str):
+            return raw.strip().lower() in ("true", "1", "yes", "on")
+        return bool(raw)
+
+    def get_collection_group_ids(self) -> list[str]:
+        """采集群列表。"""
+        raw = self._get_group("collection_digest").get("group_ids", [])
+        if not isinstance(raw, list):
+            raw = [raw]
+        return [str(x).strip() for x in raw if str(x).strip()]
+
+    def get_collection_digest_times(self) -> list[str]:
+        """采集简报时间点（HH:MM 列表）。"""
+        raw = self._get_group("collection_digest").get("digest_time", ["22:00"])
+        if isinstance(raw, str):
+            raw = [raw]
+        return [str(x).strip() for x in raw if str(x).strip()]
+
+    def get_collection_lookback_days(self) -> int:
+        """无水位时的首次回看天数。"""
+        try:
+            return max(1, int(self._get_group("collection_digest").get("lookback_days", 1)))
+        except (TypeError, ValueError):
+            return 1
+
+    def is_collection_link_fetch_enabled(self) -> bool:
+        """是否抓取链接网页元信息（标题/摘要）。"""
+        raw = self._get_group("collection_digest").get("link_fetch_enabled", True)
+        if isinstance(raw, str):
+            return raw.strip().lower() in ("true", "1", "yes", "on")
+        return bool(raw)
+
+    def get_collection_max_links(self) -> int:
+        """单次简报最多富化的链接数。"""
+        try:
+            return max(5, int(self._get_group("collection_digest").get("max_links", 30)))
+        except (TypeError, ValueError):
+            return 30
+
+    def get_collection_max_message_chars(self) -> int:
+        """喂给 LLM 的原始采集内容字符上限。"""
+        try:
+            return max(4000, int(self._get_group("collection_digest").get("max_message_chars", 20000)))
+        except (TypeError, ValueError):
+            return 20000
+
+    def get_collection_prompt(self) -> str:
+        """自定义剪报提示词（空 = 使用内置默认）。"""
+        return str(self._get_group("collection_digest").get("prompt", "") or "").strip()
+
+    # ==================== 周期复盘（周报/月报/日报存档模式） ====================
+
+    def get_digest_retain_days(self) -> int:
+        """日报 digest 存档保留天数。
+
+        周报需要回看 7 天、月报兜底需要回看一个月——默认 40 天。
+        只影响 plugin_data/digests 下的 JSON 存档清理，不影响其他数据。
+        """
+        try:
+            return max(7, int(self._get_group("auto_analysis").get("digest_retain_days", 40)))
+        except (TypeError, ValueError):
+            return 40
+
+    def is_daily_qq_push_enabled(self, total_items: int = 0) -> bool:
+        """日报是否推送 QQ（图片/文本/文件）。
+
+        False = 存档模式：照常生成、照常发邮件、照常落盘，只是不打扰 QQ。
+        daily_qq_push_min_items > 0 时，当日信息量达标的「大日子」例外照推。
+        """
+        g = self._get_group("auto_analysis")
+        raw = g.get("daily_qq_push", True)
+        if isinstance(raw, str):
+            enabled = raw.strip().lower() in ("true", "1", "yes", "on")
+        else:
+            enabled = bool(raw)
+        if enabled:
+            return True
+        try:
+            threshold = int(g.get("daily_qq_push_min_items", 0) or 0)
+        except (TypeError, ValueError):
+            threshold = 0
+        return threshold > 0 and total_items >= threshold
+
+    def _get_review_group(self) -> dict:
+        return self._get_group("periodic_review")
+
+    def is_weekly_review_enabled(self) -> bool:
+        """周报总开关。"""
+        raw = self._get_review_group().get("weekly_enabled", False)
+        if isinstance(raw, str):
+            return raw.strip().lower() in ("true", "1", "yes", "on")
+        return bool(raw)
+
+    def get_weekly_review_time(self) -> str:
+        """周报推送时间点（HH:MM）。"""
+        return str(self._get_review_group().get("weekly_time", "08:30") or "08:30").strip()
+
+    def get_weekly_review_day(self) -> int:
+        """周报推送星期（0=周一 … 6=周日，与 apscheduler day_of_week 一致）。"""
+        try:
+            d = int(self._get_review_group().get("weekly_day", 0))
+        except (TypeError, ValueError):
+            return 0
+        return min(6, max(0, d))
+
+    def is_monthly_review_enabled(self) -> bool:
+        """月报总开关。"""
+        raw = self._get_review_group().get("monthly_enabled", False)
+        if isinstance(raw, str):
+            return raw.strip().lower() in ("true", "1", "yes", "on")
+        return bool(raw)
+
+    def get_monthly_review_time(self) -> str:
+        """月报推送时间点（HH:MM）。"""
+        return str(self._get_review_group().get("monthly_time", "08:45") or "08:45").strip()
+
+    def get_monthly_review_day(self) -> int:
+        """月报推送日（每月几号，1-28，避免月底天数不齐）。"""
+        try:
+            d = int(self._get_review_group().get("monthly_day", 1))
+        except (TypeError, ValueError):
+            return 1
+        return min(28, max(1, d))
+
+    def get_weekly_lookback_days(self) -> int:
+        """周报回看天数（默认 7）。"""
+        try:
+            return max(2, int(self._get_review_group().get("weekly_lookback_days", 7)))
+        except (TypeError, ValueError):
+            return 7
+
+    def get_review_max_themes(self) -> int:
+        """周/月报主题数上限。"""
+        try:
+            return max(2, int(self._get_review_group().get("max_themes", 6)))
+        except (TypeError, ValueError):
+            return 6
+
+    def is_weekly_email_enabled(self) -> bool:
+        """周报是否同时发邮件。"""
+        raw = self._get_review_group().get("weekly_email", True)
+        if isinstance(raw, str):
+            return raw.strip().lower() in ("true", "1", "yes", "on")
+        return bool(raw)
+
+    def is_monthly_email_enabled(self) -> bool:
+        """月报是否同时发邮件。"""
+        raw = self._get_review_group().get("monthly_email", True)
+        if isinstance(raw, str):
+            return raw.strip().lower() in ("true", "1", "yes", "on")
+        return bool(raw)
+
     # ==================== 邮件推送配置 ====================
 
     def is_digest_email_enabled(self) -> bool:

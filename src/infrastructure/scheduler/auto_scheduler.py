@@ -150,6 +150,28 @@ class AutoScheduler:
         # 但 schedule_jobs 意味着插件仍在运行；因此需要重置此标志位
         self._terminating = False
 
+        # 0. 采集简报独立开关、独立时间点：不受下方日报 early return 影响
+        try:
+            if self.config_manager.is_collection_digest_enabled():
+                scheduler = context.cron_manager.scheduler
+                self._schedule_collection_digest_jobs(scheduler)
+        except AttributeError:
+            # 旧配置无 collection_digest 段
+            pass
+        except Exception as e:
+            logger.error(f"采集简报任务注册失败: {e}")
+
+        # 0.5 周期复盘（周报/月报）：独立于日报注册——
+        # 日报即使转存档（不推 QQ）也照常落盘，周报照常吃这些存档
+        try:
+            scheduler = context.cron_manager.scheduler
+            self._schedule_periodic_review_jobs(scheduler)
+        except AttributeError:
+            # 旧配置无 periodic_review 段
+            pass
+        except Exception as e:
+            logger.error(f"周期复盘任务注册失败: {e}")
+
         if not self.config_manager.is_auto_analysis_enabled():
             logger.info(
                 "定时分析未开启（per_group 名单为空 或 by_category 无分类），不注册定时任务。"
@@ -288,6 +310,197 @@ class AutoScheduler:
                 logger.error(f"注册增量分析任务失败 ({hour:02d}:{minute:02d}): {e}")
 
         logger.info(f"增量调度注册完成: {len(trigger_times)} 个增量分析任务")
+
+    def _schedule_collection_digest_jobs(self, scheduler):
+        """注册采集简报定时任务（独立于日报时间点）。"""
+        from apscheduler.triggers.cron import CronTrigger
+
+        time_config = self.config_manager.get_collection_digest_times()
+        if isinstance(time_config, str):
+            time_config = [time_config]
+
+        for i, t_str in enumerate(time_config):
+            try:
+                t_str = str(t_str).replace("：", ":").strip()
+                hour, minute = t_str.split(":")
+
+                trigger = CronTrigger(hour=int(hour), minute=int(minute))
+                job_id = f"{PLUGIN_NAME}_collection_{i}"
+
+                scheduler.add_job(
+                    self._run_collection_digest,
+                    trigger=trigger,
+                    id=job_id,
+                    replace_existing=True,
+                    misfire_grace_time=60,
+                )
+                self.scheduler_job_ids.append(job_id)
+                logger.info(f"已注册采集简报任务: {t_str} (Job ID: {job_id})")
+
+            except Exception as e:
+                logger.error(f"注册采集简报任务失败 ({t_str}): {e}")
+
+    def _schedule_periodic_review_jobs(self, scheduler):
+        """注册周期复盘任务：周报（每周某天）+ 月报（每月某天）。
+
+        与日报/采集简报独立：输入是已落盘的日报存档，不依赖日报推送是否开启。
+        """
+        from apscheduler.triggers.cron import CronTrigger
+
+        if not hasattr(self.config_manager, "is_weekly_review_enabled"):
+            return  # 旧版 config_manager 无周期复盘能力
+
+        if self.config_manager.is_weekly_review_enabled():
+            try:
+                t_str = str(self.config_manager.get_weekly_review_time()).replace("：", ":")
+                hour, minute = t_str.split(":")
+                day = self.config_manager.get_weekly_review_day()
+                job_id = f"{PLUGIN_NAME}_weekly_review"
+                scheduler.add_job(
+                    self._run_weekly_review,
+                    trigger=CronTrigger(day_of_week=day, hour=int(hour), minute=int(minute)),
+                    id=job_id,
+                    replace_existing=True,
+                    misfire_grace_time=1800,
+                )
+                self.scheduler_job_ids.append(job_id)
+                logger.info(
+                    f"已注册周报任务: 每周 day_of_week={day} {t_str} (Job ID: {job_id})"
+                )
+            except Exception as e:
+                logger.error(f"注册周报任务失败: {e}")
+
+        if self.config_manager.is_monthly_review_enabled():
+            try:
+                t_str = str(self.config_manager.get_monthly_review_time()).replace("：", ":")
+                hour, minute = t_str.split(":")
+                day = self.config_manager.get_monthly_review_day()
+                job_id = f"{PLUGIN_NAME}_monthly_review"
+                scheduler.add_job(
+                    self._run_monthly_review,
+                    trigger=CronTrigger(day=day, hour=int(hour), minute=int(minute)),
+                    id=job_id,
+                    replace_existing=True,
+                    misfire_grace_time=3600,
+                )
+                self.scheduler_job_ids.append(job_id)
+                logger.info(
+                    f"已注册月报任务: 每月 {day} 号 {t_str} (Job ID: {job_id})"
+                )
+            except Exception as e:
+                logger.error(f"注册月报任务失败: {e}")
+
+    async def _run_weekly_review(self):
+        """周报触发：读最近 7 天日报存档 → LLM 聚合主线 → 图片 + 邮件。"""
+        from ...application.services.weekly_review_service import WeeklyReviewService
+        from astrbot.api.star import StarTools
+        from ...shared.constants import PLUGIN_NAME
+
+        logger.info("周报定时触发")
+        if self._terminating:
+            return
+
+        platform_id = None
+        try:
+            if (
+                hasattr(self.bot_manager, "get_platform_count")
+                and self.bot_manager.get_platform_count() == 1
+            ):
+                platform_id = self.bot_manager.get_platform_ids()[0]
+        except Exception:
+            platform_id = None
+
+        report_generator = None
+        html_render_func = self.html_render_func
+        if self.report_dispatcher is not None:
+            report_generator = getattr(self.report_dispatcher, "report_generator", None)
+            if not html_render_func:
+                html_render_func = getattr(
+                    self.report_dispatcher, "_html_render_func", None
+                )
+
+        plugin_data_dir = None
+        try:
+            plugin_data_dir = StarTools.get_data_dir(PLUGIN_NAME)
+        except Exception as e:
+            logger.warning(f"获取插件数据目录失败: {e}，周报将使用临时目录")
+
+        service = WeeklyReviewService(
+            config_manager=self.config_manager,
+            analysis_service=self.analysis_service,
+            bot_manager=self.bot_manager,
+            report_generator=report_generator,
+            html_render_func=html_render_func,
+            data_dir=plugin_data_dir,
+        )
+        try:
+            result = await service.run(platform_id=platform_id)
+            logger.info(
+                "周报定时完成: success=%s, themes=%s, days=%s, sent=%s, reason=%s",
+                result.get("success"),
+                result.get("themes"),
+                result.get("days"),
+                result.get("messages_sent"),
+                result.get("reason"),
+            )
+        except Exception as e:
+            logger.error(f"周报执行失败: {e}", exc_info=True)
+
+    async def _run_monthly_review(self):
+        """月报触发：当月周报（不足回退日报）→ LLM 月度榜单 → 图片 + HTML 存档 + 邮件。"""
+        from ...application.services.monthly_review_service import MonthlyReviewService
+        from astrbot.api.star import StarTools
+        from ...shared.constants import PLUGIN_NAME
+
+        logger.info("月报定时触发")
+        if self._terminating:
+            return
+
+        platform_id = None
+        try:
+            if (
+                hasattr(self.bot_manager, "get_platform_count")
+                and self.bot_manager.get_platform_count() == 1
+            ):
+                platform_id = self.bot_manager.get_platform_ids()[0]
+        except Exception:
+            platform_id = None
+
+        report_generator = None
+        html_render_func = self.html_render_func
+        if self.report_dispatcher is not None:
+            report_generator = getattr(self.report_dispatcher, "report_generator", None)
+            if not html_render_func:
+                html_render_func = getattr(
+                    self.report_dispatcher, "_html_render_func", None
+                )
+
+        plugin_data_dir = None
+        try:
+            plugin_data_dir = StarTools.get_data_dir(PLUGIN_NAME)
+        except Exception as e:
+            logger.warning(f"获取插件数据目录失败: {e}，月报将使用临时目录")
+
+        service = MonthlyReviewService(
+            config_manager=self.config_manager,
+            analysis_service=self.analysis_service,
+            bot_manager=self.bot_manager,
+            report_generator=report_generator,
+            html_render_func=html_render_func,
+            data_dir=plugin_data_dir,
+        )
+        try:
+            result = await service.run(platform_id=platform_id)
+            logger.info(
+                "月报定时完成: success=%s, themes=%s, sent=%s, reason=%s, html=%s",
+                result.get("success"),
+                result.get("themes"),
+                result.get("messages_sent"),
+                result.get("reason"),
+                result.get("html_path"),
+            )
+        except Exception as e:
+            logger.error(f"月报执行失败: {e}", exc_info=True)
 
     def unschedule_jobs(self, context):
         """取消定时任务"""
@@ -530,6 +743,52 @@ class AutoScheduler:
             result.get("output_format"),
             result.get("digest_path"),
         )
+
+    async def _run_collection_digest(self):
+        """采集简报触发：拉采集群消息 → 链接富化 → LLM 剪报 → 私聊管理员。"""
+        from ...application.services.collection_digest_service import (
+            CollectionDigestService,
+        )
+        from astrbot.api.star import StarTools
+        from ...shared.constants import PLUGIN_NAME
+
+        logger.info("采集简报定时触发")
+
+        platform_id = None
+        try:
+            if (
+                hasattr(self.bot_manager, "get_platform_count")
+                and self.bot_manager.get_platform_count() == 1
+            ):
+                platform_id = self.bot_manager.get_platform_ids()[0]
+        except Exception:
+            platform_id = None
+
+        plugin_data_dir = None
+        try:
+            plugin_data_dir = StarTools.get_data_dir(PLUGIN_NAME)
+        except Exception as e:
+            logger.warning(f"获取插件数据目录失败: {e}，采集简报将使用临时目录")
+
+        service = CollectionDigestService(
+            config_manager=self.config_manager,
+            analysis_service=self.analysis_service,
+            bot_manager=self.bot_manager,
+            data_dir=plugin_data_dir,
+        )
+        try:
+            result = await service.run(platform_id=platform_id)
+            logger.info(
+                "采集简报定时完成: success=%s, items=%s, sent=%s, reason=%s, llm_ok=%s, path=%s",
+                result.get("success"),
+                result.get("items"),
+                result.get("messages_sent"),
+                result.get("reason"),
+                result.get("llm_ok"),
+                result.get("digest_path"),
+            )
+        except Exception as e:
+            logger.error(f"采集简报执行失败: {e}", exc_info=True)
 
     async def rerender_latest_digest(self) -> dict:
         """重渲染最新落盘的 digest 并重新发送（调试模板/发送方式用）。
