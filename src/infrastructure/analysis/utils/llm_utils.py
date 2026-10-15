@@ -347,6 +347,11 @@ async def call_provider_with_retry(
                     llm_kwargs["response_format"] = r_format
                 if extra_generate_kwargs:
                     llm_kwargs.update(extra_generate_kwargs)
+                # max_tokens 兜底：AstrBot 的 anthropic 源在调用方不传时默认 1024，
+                # 推理模型（deepseek 系 thinking + 长数组 JSON 输出）必然超限截断，
+                # 表现为 text 块缺失/残缺 → "未找到JSON数组" → 分析条目归零。
+                # 调用方显式传的值优先（setdefault 放在 update 之后）。
+                llm_kwargs.setdefault("max_tokens", 8192)
 
                 if enable_streaming_llm_call:
                     resp = await _call_provider_stream(context, pid, llm_kwargs)

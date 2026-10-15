@@ -148,9 +148,9 @@ async def test_keyword_non_monitored_group_ignored():
 
 @pytest.mark.asyncio
 async def test_keyword_sk_skips_llm_confirm():
-    """sk 命中：正则已足够精确，跳过 LLM 确认直接秒推（省 token 主改动）。
+    """sk 命中：正则已足够精确，直接秒推，零 LLM 调用（省 token + 零延迟）。
 
-    线上优化：此前每条命中都先调 LLM 确认，sk 类消息多花 1 次确认调用。
+    设计变更：critical 命中不再走 LLM 平台分析/联网验真/入池，抓到即推。
     """
     cfg = make_keyword_config(use_llm_confirm=True)
     adapter = FakeAdapter()
@@ -164,11 +164,11 @@ async def test_keyword_sk_skips_llm_confirm():
             FakeEvent("12345", "groupA", "sk-abcd1234efgh5678ijkl9012mnop3456", "路人")
         )
 
-    # sk 免确认：只剩 1 次 LLM 调用（平台/来源分析），不再多花确认调用
-    assert mock_llm.await_count == 1
+    # critical 直推：零 LLM 调用（既不确认也不平台分析）
+    assert mock_llm.await_count == 0
     assert len(adapter.sent_messages) == 1
     assert "API Key" in adapter.sent_messages[0]["text"]
-    print("✓ 关键词模式：sk 命中跳过 LLM 确认 → 秒推")
+    print("✓ 关键词模式：sk 命中直推，零 LLM")
     svc.stop()
 
 

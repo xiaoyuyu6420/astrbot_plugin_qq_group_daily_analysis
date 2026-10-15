@@ -283,23 +283,15 @@ async def test_extract_text_forward_failure_degrades():
 # ============================================================
 
 @pytest.mark.asyncio
-async def test_keyword_sk_hit_alert_contains_verify_field():
-    """sk 命中推送的 alert 含「平台/验真」字段。"""
+async def test_keyword_sk_hit_no_llm_no_platform_field():
+    """sk 命中直推：alert 无平台/验真字段（critical 不再走 LLM 分析/验真）。"""
     cfg = _make_cfg(use_llm_confirm=False)
     adapter = FakeAdapter()
     svc = MessageMonitorService(MagicMock(), cfg, FakeBotManager(adapter))
 
-    # mock LLM 分析返回结果
-    svc._analyze_sk_hit = AsyncMock(return_value={
-        "platform": "OpenAI官方",
-        "source_url": "https://api.openai.com",
-        "confidence": "high",
-        "note": "疑似真实密钥",
-    })
-    # mock 验真返回有效
-    svc._verify_sk_real = AsyncMock(return_value={
-        "openai": "valid", "custom": "skipped", "custom_base_url": ""
-    })
+    # 新行为下 _analyze_sk_hit / _verify_sk_real 不再被调用；mock 它们确保未被触发
+    svc._analyze_sk_hit = AsyncMock(return_value={"platform": "应不被调用"})
+    svc._verify_sk_real = AsyncMock(return_value={"openai": "应不被调用"})
 
     await svc.process(FakeEvent(
         "12345", "groupA",
@@ -309,11 +301,12 @@ async def test_keyword_sk_hit_alert_contains_verify_field():
     assert len(adapter.sent_messages) == 1
     alert = adapter.sent_messages[0]["text"]
     assert "关键词命中预警" in alert
-    assert "🔬 平台：OpenAI官方" in alert
-    assert "可信度：高" in alert
-    assert "✅ 验真" in alert
-    assert "有效" in alert
-    assert "疑似真实密钥" not in alert  # 备注行已精简掉
+    assert "API Key" in alert
+    # critical 直推，无 LLM 平台/验真字段
+    assert "🔬 平台" not in alert
+    assert "✅ 验真" not in alert
+    svc._analyze_sk_hit.assert_not_awaited()
+    svc._verify_sk_real.assert_not_awaited()
     svc.stop()
 
 

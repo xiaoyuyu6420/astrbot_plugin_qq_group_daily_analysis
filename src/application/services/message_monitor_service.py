@@ -62,7 +62,9 @@ BUILTIN_PATTERNS: list[tuple[re.Pattern, str, str]] = [
     # ── 资源链接类（收紧：keyword 模式不命中裸网址，避免普通分享刷屏）──
     (re.compile(r"magnet:\?\S+", re.IGNORECASE), "资源链接", "磁力链接"),
     (re.compile(r"(?:提取码|访问码|密码)\s*[:：]\s*\S+", re.IGNORECASE), "资源链接", "网盘提取码"),
-    (re.compile(r"(?:邀请码|邀请|邀请链接)\s*[:：]?\s*\S{4,}", re.IGNORECASE), "渠道", "邀请码"),
+    # 注：曾内置「邀请码」正则，但"邀请/邀请码 + 任意4字符"误伤过重
+    # （"邀请下能让我吃上额度"、"邀请码喵…"等闲聊全被吞），已移除。
+    # 真要抓邀请码分享，建议配自定义关键词 + 开 LLM 确认。
 ]
 
 # ── 裸密钥形态（低置信：仅凭"像随机串"不能确认，必须过 LLM 确认才推送）──
@@ -361,22 +363,12 @@ class MessageMonitorService:
         # 第五层：按优先级分流
         batch_sec = self.config_manager.get_keyword_batch_seconds()
         if priority == NoiseReducer.PRIORITY_CRITICAL:
-            # critical → 立即推送
-            # 密钥类（API Key）命中：追加 LLM 平台分析 + 联网验真
-            sk_analysis = None
-            verify_result = None
-            is_key_hit = any(c == "API Key" for c, _ in hits)
-            if is_key_hit:
-                sk_analysis = await self._analyze_sk_hit(sender_id, sender_name, text)
-                source_url = (sk_analysis or {}).get("source_url") or None
-                verify_result = await self._verify_sk_real(text, source_url)
-                # 写入 SK 聚合池（网关数据源）；失败不影响推送
-                try:
-                    await self._harvest_sk_to_pool(
-                        text, source_url, group_id, sender_id
-                    )
-                except Exception as e:
-                    logger.warning(f"[Monitor-KW] SK 入池失败: {e}")
+            # critical → 立即推送（纯关键词命中即推，零 LLM 延迟）
+            # 设计变更：原先 critical 命中后串行跑 _analyze_sk_hit(LLM 平台分析) +
+            # _verify_sk_real(联网验真) + _harvest_sk_to_pool(入池)，把秒推拖成
+            # 十几秒延迟。现全部移除——抓到即推。
+            # 网关已下线（gateway_enabled 默认关），入池无消费者亦不再写入。
+            # 端点验真可选保留（verify_sk_real 配置，默认关，需时单独开启）。
             await self._push_keyword_alert(
                 sender_id=sender_id,
                 sender_name=sender_name,
@@ -385,8 +377,6 @@ class MessageMonitorService:
                 hits=hits,
                 llm_verdict=verdict,
                 platform_id=platform_id,
-                sk_analysis=sk_analysis,
-                verify_result=verify_result,
             )
             self._noise_reducer.mark_cooldown(sender_id, group_id)
             self._noise_reducer.mark_dedup(text)

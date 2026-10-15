@@ -56,6 +56,45 @@ _TIMEOUT_STREAM = ClientTimeout(total=None, connect=10, sock_read=90)
 _UA = "astrbot-sk-gateway/1.0"
 # 单个请求最多尝试的渠道数（池子可能很大，全试一遍 502 会等太久）
 _MAX_ATTEMPTS = 5
+# /v1/models 渠道级真实探查：拉每个可用渠道上游的 models 端点，
+# 拿真实模型列表 + 来源标签（同模型多渠道多条不合并），探查失败进 errors 不造假模型。
+_MODELS_CACHE_TTL = 600
+_MODELS_PROBE_TIMEOUT = ClientTimeout(total=12, connect=8)
+_MODELS_PROBE_CONCURRENCY = 5
+
+
+def _models_url(base_url: str, protocol: str) -> str:
+    """拼接上游 models 端点，兼容 base_url 尾部 /v1 或 /v1beta（避免 /v1/v1 重复）。"""
+    base = (base_url or "").rstrip("/")
+    if protocol == "gemini":
+        if base.endswith("/v1beta"):
+            return f"{base}/models"
+        return f"{base}/v1beta/models"
+    if base.endswith("/v1"):
+        return f"{base}/models"
+    return f"{base}/v1/models"
+
+
+def _extract_model_ids(payload: Any, protocol: str) -> list[str]:
+    """从上游 models 响应提取模型 id 列表。openai/anthropic: data[].id；gemini: models[].name。"""
+    ids: list[str] = []
+    if protocol == "gemini":
+        items = payload.get("models", []) if isinstance(payload, dict) else []
+        for m in items:
+            name = m.get("name") or m.get("id") or ""
+            # gemini 返回 "models/gemini-2.5-flash"，去掉前缀
+            name = name.split("models/", 1)[-1] if name.startswith("models/") else name
+            if name:
+                ids.append(name)
+    else:
+        items = payload.get("data", []) if isinstance(payload, dict) else []
+        for m in items:
+            mid = m.get("id") if isinstance(m, dict) else ""
+            if mid:
+                ids.append(mid)
+    # 去重保序
+    seen: set[str] = set()
+    return [x for x in ids if not (x in seen or seen.add(x))]
 
 
 class _ChannelFailed(Exception):
@@ -106,6 +145,10 @@ class SkGateway:
         self._runner: web.AppRunner | None = None
         self._session: ClientSession | None = None
         self._site: web.TCPSite | None = None
+        # /v1/models 渠道级真实探查：缓存 (data, errors) + 并发锁防重探
+        self._models_cache: tuple[list[dict], list[dict]] | None = None
+        self._models_cache_ts: float = 0.0
+        self._models_probe_lock = asyncio.Lock()
 
     # ------------------------------------------------------------------
     # 生命周期
@@ -329,18 +372,116 @@ class SkGateway:
     async def _handle_models(self, request: web.Request) -> web.Response:
         if not self._check_auth(request):
             return self._unauthorized()
-        # 按池内可用渠道的协议动态聚合（空池 → 空名单，诚实）
-        protocols = self._pool.active_protocols()
-        models: list[str] = []
-        if "openai" in protocols:
-            models += _OPENAI_MODELS
-        if "anthropic" in protocols:
-            models += _ANTHROPIC_MODELS
-        if "gemini" in protocols:
-            models += _GEMINI_MODELS
+        # 渠道级真实探查：每个可用 key 独立拉上游 /v1/models，
+        # 按渠道展开 + 来源标签（owned_by/channel），同模型多渠道多条不合并。
+        # 探查失败的渠道不造假模型，进 errors 字段（空池 → 空名单，诚实）。
+        data, errors = await self._get_models_with_cache()
         return web.json_response(
-            {"object": "list", "data": [{"id": m, "object": "model"} for m in models]}
+            {"object": "list", "data": data, "errors": errors}
         )
+
+    async def _get_models_with_cache(self) -> tuple[list[dict], list[dict]]:
+        """带 TTL 缓存的渠道级 models 探查。并发锁防同时多请求触发重探。"""
+        now = time.time()
+        if self._models_cache is not None and now < self._models_cache_ts:
+            return self._models_cache
+        async with self._models_probe_lock:
+            # double-check：持锁后其他协程可能已探完
+            if self._models_cache is not None and time.time() < self._models_cache_ts:
+                return self._models_cache
+            result = await self._probe_all_channels()
+            self._models_cache = result
+            self._models_cache_ts = time.time() + _MODELS_CACHE_TTL
+            return result
+
+    async def _probe_all_channels(self) -> tuple[list[dict], list[dict]]:
+        """并发探查所有可用渠道（usable + unverified + 冷却到期复活）。"""
+        # next_candidates 不传 protocol → 返回所有协议的可用渠道
+        candidates = self._pool.next_candidates()
+        if not candidates:
+            logger.info("[SkGateway] /v1/models 探查：池无可用渠道")
+            return [], []
+        session = self._session_or_create()
+        semaphore = asyncio.Semaphore(_MODELS_PROBE_CONCURRENCY)
+        data: list[dict] = []
+        errors: list[dict] = []
+        started = time.monotonic()
+
+        async def _probe(entry: dict[str, Any]) -> None:
+            async with semaphore:
+                ids, err = await self._probe_one_channel(session, entry)
+                if err is not None:
+                    errors.append(self._channel_error(entry, err))
+                    return
+                for mid in ids:
+                    data.append(self._channel_model_entry(entry, mid))
+
+        await asyncio.gather(*[_probe(c) for c in candidates])
+        logger.info(
+            f"[SkGateway] /v1/models 探查完成: {len(candidates)} 渠道, "
+            f"{len(data)} 条模型, {len(errors)} 失败, 耗时 {time.monotonic() - started:.1f}s"
+        )
+        return data, errors
+
+    async def _probe_one_channel(
+        self, session: ClientSession, entry: dict[str, Any]
+    ) -> tuple[list[str], str | None]:
+        """探查单个渠道上游的 models 端点，返回 (模型 id 列表, 错误)。"""
+        sk = entry.get("sk", "")
+        base = entry.get("base_url", "")
+        protocol = entry.get("protocol", "openai")
+        url = _models_url(base, protocol)
+        headers = {"User-Agent": _UA}
+        if protocol == "gemini":
+            headers["x-goog-api-key"] = sk
+        else:
+            headers["Authorization"] = f"Bearer {sk}"
+        if protocol == "anthropic":
+            headers["anthropic-version"] = "2023-06-01"
+        try:
+            async with session.get(url, headers=headers, timeout=_MODELS_PROBE_TIMEOUT) as resp:
+                if resp.status != 200:
+                    return [], f"HTTP {resp.status}"
+                payload = await resp.json(content_type=None)
+                ids = _extract_model_ids(payload, protocol)
+                if not ids:
+                    return [], "空模型列表"
+                return ids, None
+        except asyncio.TimeoutError:
+            return [], "超时"
+        except Exception as e:
+            return [], f"{type(e).__name__}"
+
+    @staticmethod
+    def _channel_tag(entry: dict[str, Any]) -> str:
+        sk = entry.get("sk", "")
+        base = entry.get("base_url", "")
+        masked = f"{sk[:6]}***{sk[-4:]}" if len(sk) > 10 else sk
+        host = base.split("//", 1)[-1] if base else "?"
+        return f"{masked}@{host}"
+
+    def _channel_model_entry(self, entry: dict[str, Any], model_id: str) -> dict:
+        sk = entry.get("sk", "")
+        masked = f"{sk[:6]}***{sk[-4:]}" if len(sk) > 10 else sk
+        return {
+            "id": model_id,
+            "object": "model",
+            "owned_by": self._channel_tag(entry),
+            "channel": {
+                "sk": masked,
+                "base_url": entry.get("base_url", ""),
+                "protocol": entry.get("protocol", "openai"),
+                "source_group": str(entry.get("source_group", "")),
+                "status": entry.get("status", "?"),
+            },
+        }
+
+    def _channel_error(self, entry: dict[str, Any], err: str) -> dict:
+        return {
+            "channel": self._channel_tag(entry),
+            "protocol": entry.get("protocol", "openai"),
+            "error": err,
+        }
 
     # ------------------------------------------------------------------
     # 单渠道转发
@@ -348,9 +489,12 @@ class SkGateway:
 
     def _session_or_create(self) -> ClientSession:
         if self._session is None or self._session.closed:
-            # trust_env 走系统代理（与 sk_verifier 同范式）；
+            # trust_env=False：网关转发直连，不继承系统代理。
+            # 理由：中转站本就国内可直连，继承代理会把直连可达的中转站拖死
+            # （代理坏时全灭）。官方 api.openai.com 需代理但国内直连不通，
+            # 失败即冷却无害（不消耗 token）。代理若修好，验真/抓网页仍各自走代理。
             # session 级默认非流式超时，流式请求在 post() 处单独覆盖
-            self._session = ClientSession(timeout=_TIMEOUT_NOSTREAM, trust_env=True)
+            self._session = ClientSession(timeout=_TIMEOUT_NOSTREAM, trust_env=False)
         return self._session
 
     async def _forward(

@@ -70,6 +70,60 @@ def test_pool_old_data_migration(tmp_path):
     assert pool.entries()[0]["protocol"] == "anthropic"
 
 
+def test_bare_sk_key_gets_official_base(tmp_path):
+    """裸 sk-（非 sk-proj-）原生 key：入池即推断 OpenAI 官方端点，进入转发候选。
+
+    回归：旧推断只认 sk-proj-，裸 sk- 的 base_url 落空串，
+    被网关 usable 过滤（base_url 真值判断）永久跳过——真 key 入池却永不转发。
+    """
+    bare = "sk-DnRKz" + "x" * 40
+    pool = _pool(tmp_path)
+    pool.add(bare)
+    entry = pool.entries()[0]
+    assert entry["base_url"] == _OPENAI
+    assert entry["protocol"] == "openai"
+    # 网关转发候选不再为空（_relay 的空 base 过滤放行）
+    assert [e["sk"] for e in pool.next_candidates("openai")] == [bare]
+
+
+def test_pool_migration_fills_empty_base_url(tmp_path):
+    """存量数据：base_url 为空的裸 sk- 渠道 → 加载时补官方端点并落盘。"""
+    import json as _json
+    path = str(tmp_path / "sk.json")
+    _json.dump([{"sk": "sk-DnRKz" + "x" * 40, "base_url": "", "status": "unverified"}],
+               open(path, "w"))
+    pool = SkPool(path)
+    assert pool.entries()[0]["base_url"] == _OPENAI
+    # 已持久化：重启后仍是官方端点
+    pool2 = SkPool(path)
+    assert pool2.entries()[0]["base_url"] == _OPENAI
+
+
+def test_bare_sk_key_forwarded_through_gateway(tmp_path):
+    """端到端：池内仅有裸 sk- 原生渠道时，/v1/chat/completions 转发到官方端点。"""
+    async def body():
+        bare = "sk-DnRKz" + "x" * 40
+        pool = _pool(tmp_path)
+        pool.add(bare)
+        client, gw = await _make_client(pool)
+        gw._session = _mock_session(_mock_http_response(200))
+        gw._session_or_create = lambda: gw._session
+        try:
+            resp = await client.post(
+                "/v1/chat/completions",
+                headers={"Authorization": "Bearer mk-test"},
+                json={"model": "gpt-5.6", "messages": [{"role": "user", "content": "hi"}]},
+            )
+            assert resp.status == 200
+            # 上游 URL = 官方端点完整路径（空 base 曾导致该渠道被过滤、502）
+            called_url = gw._session.post.call_args[0][0]
+            assert called_url == f"{_OPENAI}/v1/chat/completions"
+        finally:
+            await client.close()
+
+    _run(body())
+
+
 def test_next_candidates_protocol_filter(tmp_path):
     """next_candidates(protocol) 只返回同协议渠道。"""
     pool = _pool(tmp_path)
@@ -201,6 +255,19 @@ def _mock_session(*responses) -> MagicMock:
     return session
 
 
+def _mock_get_session(*responses) -> MagicMock:
+    """mock ClientSession 的 GET（/v1/models 探查用），按顺序返回给定响应。"""
+    session = MagicMock()
+    cms = []
+    for resp in responses:
+        cm = AsyncMock()
+        cm.__aenter__ = AsyncMock(return_value=resp)
+        cm.__aexit__ = AsyncMock(return_value=False)
+        cms.append(cm)
+    session.get = MagicMock(side_effect=cms)
+    return session
+
+
 async def _make_client(pool: SkPool, master_key: str = "mk-test"):
     gw = SkGateway(pool, master_key=master_key, host="127.0.0.1", port=0)
     server = TestServer(gw._build_app())
@@ -242,19 +309,30 @@ def test_gateway_no_master_key_does_not_start(tmp_path):
 
 
 def test_gateway_models_with_auth(tmp_path):
+    """/v1/models 探查上游真实模型 + 来源标签。"""
     async def body():
         pool = _pool(tmp_path)
         pool.add(_SK_A, base_url=_OPENAI)
-        client, _ = await _make_client(pool)
+        client, gw = await _make_client(pool)
+        gw._session = _mock_get_session(
+            _mock_http_response(200, {"data": [{"id": "gpt-4o"}, {"id": "gpt-5.6"}]})
+        )
+        gw._session_or_create = lambda: gw._session
         try:
             resp = await client.get(
                 "/v1/models", headers={"Authorization": "Bearer mk-test"}
             )
             assert resp.status == 200
             data = await resp.json()
-            assert data["object"] == "list" and len(data["data"]) > 0
+            assert data["object"] == "list"
             ids = {m["id"] for m in data["data"]}
-            assert "gpt-4o" in ids
+            assert ids == {"gpt-4o", "gpt-5.6"}
+            # 每条带来源标签（owned_by + channel）
+            entry = data["data"][0]
+            assert entry["owned_by"].startswith("sk-pro")
+            assert entry["channel"]["base_url"] == _OPENAI
+            assert entry["channel"]["protocol"] == "openai"
+            assert data["errors"] == []
         finally:
             await client.close()
 
@@ -640,20 +718,49 @@ def test_gateway_gemini_auth_via_goog_header(tmp_path):
 
 
 def test_gateway_models_dynamic_aggregation(tmp_path):
-    """/v1/models 按池内协议动态聚合。"""
-
+    """同模型多渠道不合并：两个 openai 渠道都有 gpt-5.6 → data 里有两条 gpt-5.6。"""
     async def body():
         pool = _pool(tmp_path)
-        pool.add(_ANTH_KEY)
-        client, _ = await _make_client(pool)
+        pool.add(_SK_A, base_url=_OPENAI)
+        pool.add(_SK_B, base_url="https://relay.example.com")
+        client, gw = await _make_client(pool)
+        # 两个渠道探查各返回含 gpt-5.6 的列表
+        gw._session = _mock_get_session(
+            _mock_http_response(200, {"data": [{"id": "gpt-4o"}, {"id": "gpt-5.6"}]}),
+            _mock_http_response(200, {"data": [{"id": "gpt-5.6"}]}),
+        )
+        gw._session_or_create = lambda: gw._session
         try:
             resp = await client.get(
                 "/v1/models", headers={"Authorization": "Bearer mk-test"}
             )
             data = await resp.json()
-            ids = {m["id"] for m in data["data"]}
-            assert "claude-sonnet-4-5-20250929" in ids  # anthropic 渠道 → claude 系
-            assert "gpt-4o" not in ids  # 无 openai 渠道 → 不列 gpt
+            gpt56 = [m for m in data["data"] if m["id"] == "gpt-5.6"]
+            assert len(gpt56) == 2  # 不合并：两条 gpt-5.6，来源不同
+            owners = {m["owned_by"] for m in gpt56}
+            assert len(owners) == 2
+        finally:
+            await client.close()
+
+    _run(body())
+
+
+def test_gateway_models_probe_failure_goes_to_errors(tmp_path):
+    """探查失败的渠道不造假模型，进 errors 字段。"""
+    async def body():
+        pool = _pool(tmp_path)
+        pool.add(_SK_A, base_url=_OPENAI)
+        client, gw = await _make_client(pool)
+        gw._session = _mock_get_session(_mock_http_response(401))
+        gw._session_or_create = lambda: gw._session
+        try:
+            resp = await client.get(
+                "/v1/models", headers={"Authorization": "Bearer mk-test"}
+            )
+            data = await resp.json()
+            assert data["data"] == []
+            assert len(data["errors"]) == 1
+            assert "HTTP 401" in data["errors"][0]["error"]
         finally:
             await client.close()
 

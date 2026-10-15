@@ -42,6 +42,10 @@ _BASE_HINTS: tuple[tuple[str, str, str], ...] = (
     ("sk-proj-", "https://api.openai.com", _PROTOCOL_OPENAI),
     ("sk-ant-", "https://api.anthropic.com", _PROTOCOL_ANTHROPIC),
     ("AIza", "https://generativelanguage.googleapis.com", _PROTOCOL_GEMINI),
+    # 裸 sk- 兜底 → OpenAI 官方：老式原生 key（非 sk-proj-）也是这个前缀，
+    # 推不出去就永远进不了转发候选（网关过滤空 base_url）。
+    # 误伤场景（某中转站 key 未带网址）只是打官方端点 401 → auth 冷却自愈，无害。
+    ("sk-", "https://api.openai.com", _PROTOCOL_OPENAI),
 )
 
 
@@ -86,10 +90,21 @@ class SkPool:
         except Exception as e:
             logger.warning(f"[SkPool] 加载失败，按空池启动: {e}")
             self._entries = []
-        # 旧数据迁移：补齐 protocol 字段（改内存即可，下次状态变更会落盘）
+        # 旧数据迁移：补齐 protocol 字段；空 base_url 按前缀补官方端点
+        # （旧推断只认 sk-proj-，裸 sk- 的原生 key 曾落成空串，被网关候选过滤永久跳过）。
+        # 改内存即可，有补填时立即落盘，其余等下次状态变更落盘。
+        migrated = False
         for e in self._entries:
             if not e.get("protocol"):
                 e["protocol"] = _infer_protocol(e.get("sk", ""), e.get("base_url", ""))
+                migrated = True
+            if not (e.get("base_url") or "").strip():
+                inferred = _infer_base_url(e.get("sk", ""))
+                if inferred:
+                    e["base_url"] = inferred
+                    migrated = True
+        if migrated:
+            self._persist()
 
     def _persist(self) -> None:
         try:
